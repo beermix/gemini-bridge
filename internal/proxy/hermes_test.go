@@ -147,13 +147,13 @@ func TestHermes_OpenAI_MultiTurnToolCalling_Streaming(t *testing.T) {
 		t.Errorf("expected 25 reasoning tokens in usage, got %d", reasoningTokensInUsage)
 	}
 
-	// Verify upstream received model gemini-3.5-flash-high and ThinkingLevel HIGH
+	// Verify upstream received model gemini-3-flash and ThinkingLevel HIGH
 	mu.Lock()
 	if len(receivedReqs) != 1 {
 		t.Fatalf("expected 1 upstream request, got %d", len(receivedReqs))
 	}
-	if receivedReqs[0].Model != "gemini-3.5-flash-high" {
-		t.Errorf("expected model gemini-3.5-flash-high, got %s", receivedReqs[0].Model)
+	if receivedReqs[0].Model != "gemini-3-flash" {
+		t.Errorf("expected model gemini-3-flash, got %s", receivedReqs[0].Model)
 	}
 	if receivedReqs[0].Request.GenerationConfig.ThinkingConfig == nil || receivedReqs[0].Request.GenerationConfig.ThinkingConfig.ThinkingLevel != "HIGH" {
 		t.Errorf("expected ThinkingLevel HIGH, got %+v", receivedReqs[0].Request.GenerationConfig.ThinkingConfig)

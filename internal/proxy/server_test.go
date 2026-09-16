@@ -559,8 +559,8 @@ func TestAnthropic_Messages_NonStreaming(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, ":generateContent") {
 			var req google.GeminiInternalRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if req.Model != "claude-sonnet-4-6-thinking" {
-				http.Error(w, "expected resolved model claude-sonnet-4-6-thinking, got "+req.Model, http.StatusBadRequest)
+			if req.Model != "claude-sonnet-4-6" {
+				http.Error(w, "expected resolved model claude-sonnet-4-6, got "+req.Model, http.StatusBadRequest)
 				return
 			}
 
@@ -709,6 +709,12 @@ func TestModels_And_Health_Endpoints(t *testing.T) {
 			}
 			if strings.Contains(m.ID, "gpt") {
 				foundGPT = true
+			}
+			if m.ID == "gpt-4o" || m.ID == "gpt-4" || m.ID == "gpt-3.5-turbo" {
+				t.Errorf("unexpected proprietary OpenAI model %q in catalog", m.ID)
+			}
+			if m.ID == "gpt-oss-120b-medium" && m.OwnedBy != "google" {
+				t.Errorf("expected gpt-oss-120b-medium owned_by to be 'google', got %q", m.OwnedBy)
 			}
 		}
 		if !foundGemini || !foundClaude || !foundGPT {

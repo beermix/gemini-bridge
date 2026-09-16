@@ -655,9 +655,20 @@ func TestView_FormattingHelpers(t *testing.T) {
 	if truncateString("test", 0) != "" {
 		t.Errorf("unexpected truncate result: %s", truncateString("test", 0))
 	}
+
+	// Short account
+	if shortAccount("27rurk@gmail.com") != "27rurk" {
+		t.Errorf("unexpected shortAccount result: %s", shortAccount("27rurk@gmail.com"))
+	}
+	if shortAccount("andrey.vd@gmail.com") != "andrey.vd" {
+		t.Errorf("unexpected shortAccount result: %s", shortAccount("andrey.vd@gmail.com"))
+	}
+	if shortAccount("plain-user") != "plain-user" {
+		t.Errorf("unexpected shortAccount result: %s", shortAccount("plain-user"))
+	}
 }
 
-func TestRenderActivityPanel_ThirtyRows(t *testing.T) {
+func TestRenderActivityPanel_ThirtyFiveRows(t *testing.T) {
 	logs := make([]proxy.RequestLogEntry, 60)
 	for i := 0; i < 60; i++ {
 		logs[i] = proxy.RequestLogEntry{
@@ -678,13 +689,13 @@ func TestRenderActivityPanel_ThirtyRows(t *testing.T) {
 	if !strings.Contains(output, "/v1/chat/59") {
 		t.Errorf("expected output to contain last entry /v1/chat/59")
 	}
-	// Should contain /v1/chat/30 (the 30th from end: 60 - 30 = index 30)
-	if !strings.Contains(output, "/v1/chat/30") {
-		t.Errorf("expected output to contain entry /v1/chat/30")
+	// Should contain /v1/chat/25 (the 35th from end: 60 - 35 = index 25)
+	if !strings.Contains(output, "/v1/chat/25") {
+		t.Errorf("expected output to contain entry /v1/chat/25")
 	}
-	// Should NOT contain /v1/chat/29 (index 29 is excluded since only last 30 are shown)
-	if strings.Contains(output, "/v1/chat/29 ") {
-		t.Errorf("expected output NOT to contain entry /v1/chat/29")
+	// Should NOT contain /v1/chat/24 (index 24 is excluded since only last 35 are shown)
+	if strings.Contains(output, "/v1/chat/24 ") {
+		t.Errorf("expected output NOT to contain entry /v1/chat/24")
 	}
 
 	// Count lines containing /v1/chat
@@ -694,8 +705,56 @@ func TestRenderActivityPanel_ThirtyRows(t *testing.T) {
 			chatLines++
 		}
 	}
-	if chatLines != 30 {
-		t.Errorf("expected exactly 30 log rows, got %d", chatLines)
+	if chatLines != 35 {
+		t.Errorf("expected exactly 35 log rows, got %d", chatLines)
+	}
+}
+
+func TestRenderActivityPanel_ModelColumnWidth(t *testing.T) {
+	stats := proxy.ServerStats{
+		RecentLogs: []proxy.RequestLogEntry{
+			{
+				Timestamp:    time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
+				Method:       "POST",
+				Path:         "/v1/messages",
+				Model:        "gemini-3.5-flash-high",
+				Status:       200,
+				Duration:     150 * time.Millisecond,
+				AccountEmail: "test@example.com",
+			},
+		},
+	}
+
+	output := renderActivityPanel(stats, 120)
+
+	if !strings.Contains(output, "gemini-3.5-flash-high") {
+		t.Errorf("expected full model name 'gemini-3.5-flash-high' without truncation, got: %s", output)
+	}
+	if strings.Contains(output, "gemini-3.5-flas...") {
+		t.Errorf("model name was truncated with ellipsis: %s", output)
+	}
+}
+
+func TestRenderActivityPanel_ModelRoutingArrowSpaces(t *testing.T) {
+	stats := proxy.ServerStats{
+		RecentLogs: []proxy.RequestLogEntry{
+			{
+				Timestamp:    time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
+				Method:       "POST",
+				Path:         "/v1/chat/completions",
+				Model:        "gpt-4",
+				TargetModel:  "gemini-3-flash",
+				Status:       200,
+				Duration:     200 * time.Millisecond,
+				AccountEmail: "test@example.com",
+			},
+		},
+	}
+
+	output := renderActivityPanel(stats, 120)
+
+	if !strings.Contains(output, "gpt-4 → gemini-3-flash") {
+		t.Errorf("expected output to contain 'gpt-4 → gemini-3-flash' with spaces around arrow, got: %s", output)
 	}
 }
 

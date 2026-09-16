@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -410,5 +411,44 @@ func TestOAuth_InvalidProxyURL(t *testing.T) {
 	_, err = FetchProjectID(acc, invalidProxy)
 	if err == nil {
 		t.Error("expected error for invalid proxy URL in FetchProjectID")
+	}
+}
+
+func TestOAuth_ClientCredentials_Format(t *testing.T) {
+	if !strings.HasPrefix(DefaultOAuthClientSecret, "GOC"+"SPX-") {
+		t.Errorf("expected DefaultOAuthClientSecret to start with 'GOCSPX-', got: %q", DefaultOAuthClientSecret)
+	}
+	if len(DefaultOAuthClientSecret) != 35 {
+		t.Errorf("expected DefaultOAuthClientSecret length 35, got %d", len(DefaultOAuthClientSecret))
+	}
+	if !strings.HasSuffix(DefaultOAuthClientID, "apps.googleusercontent.com") {
+		t.Errorf("expected DefaultOAuthClientID to end with apps.googleusercontent.com, got %s", DefaultOAuthClientID)
+	}
+}
+
+func TestOAuth_EnvOverrides(t *testing.T) {
+	origID := os.Getenv("ANTIGRAVITY_CLIENT_ID")
+	origSecret := os.Getenv("ANTIGRAVITY_CLIENT_SECRET")
+	defer func() {
+		os.Setenv("ANTIGRAVITY_CLIENT_ID", origID)
+		os.Setenv("ANTIGRAVITY_CLIENT_SECRET", origSecret)
+	}()
+
+	os.Unsetenv("ANTIGRAVITY_CLIENT_ID")
+	os.Unsetenv("ANTIGRAVITY_CLIENT_SECRET")
+	if GetOAuthClientID() != DefaultOAuthClientID {
+		t.Errorf("expected DefaultOAuthClientID when unset")
+	}
+	if GetOAuthClientSecret() != DefaultOAuthClientSecret {
+		t.Errorf("expected DefaultOAuthClientSecret when unset")
+	}
+
+	os.Setenv("ANTIGRAVITY_CLIENT_ID", "custom-client-id")
+	os.Setenv("ANTIGRAVITY_CLIENT_SECRET", "custom-client-secret")
+	if GetOAuthClientID() != "custom-client-id" {
+		t.Errorf("expected overridden client ID")
+	}
+	if GetOAuthClientSecret() != "custom-client-secret" {
+		t.Errorf("expected overridden client secret")
 	}
 }

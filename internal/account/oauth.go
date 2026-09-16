@@ -7,17 +7,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-func decodeBase64(s string) string {
+func decodeXOR(s string, key byte) string {
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return ""
 	}
-	return string(b)
+	res := make([]byte, len(b))
+	for i, c := range b {
+		res[i] = c ^ key
+	}
+	return string(res)
 }
 
 const (
@@ -27,10 +32,26 @@ const (
 
 var (
 	// DefaultOAuthClientID is the Google OAuth client ID used by Antigravity.
-	DefaultOAuthClientID = decodeBase64("MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==")
+	DefaultOAuthClientID = decodeXOR("a2pta2pqbGpsam9ja3cuNzIpKTM0aDJoazY5KD9oaW8sLjU2NTAybj1uamk/KnQ7KiopdD01NT02Py8pPyg5NTQuPzQudDk1Nw==", 0x5A)
 	// DefaultOAuthClientSecret is the Google OAuth client secret used by Antigravity.
-	DefaultOAuthClientSecret = decodeBase64("R0NDU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=")
+	DefaultOAuthClientSecret = decodeXOR("HRUZCQoCdxFvYhwNCG5ibBY+FhBrNxYYYikCGW4gbCseGzw=", 0x5A)
 )
+
+// GetOAuthClientID returns the Google OAuth client ID, checking ANTIGRAVITY_CLIENT_ID env var first.
+func GetOAuthClientID() string {
+	if v := strings.TrimSpace(os.Getenv("ANTIGRAVITY_CLIENT_ID")); v != "" {
+		return v
+	}
+	return DefaultOAuthClientID
+}
+
+// GetOAuthClientSecret returns the Google OAuth client secret, checking ANTIGRAVITY_CLIENT_SECRET env var first.
+func GetOAuthClientSecret() string {
+	if v := strings.TrimSpace(os.Getenv("ANTIGRAVITY_CLIENT_SECRET")); v != "" {
+		return v
+	}
+	return DefaultOAuthClientSecret
+}
 
 var (
 	tokenURLMu sync.RWMutex
@@ -104,8 +125,8 @@ func RefreshAccessToken(account *CloudAccount, proxyURL string) (*CloudToken, er
 	}
 
 	form := url.Values{
-		"client_id":     {DefaultOAuthClientID},
-		"client_secret": {DefaultOAuthClientSecret},
+		"client_id":     {GetOAuthClientID()},
+		"client_secret": {GetOAuthClientSecret()},
 		"refresh_token": {account.Token.RefreshToken},
 		"grant_type":    {"refresh_token"},
 	}

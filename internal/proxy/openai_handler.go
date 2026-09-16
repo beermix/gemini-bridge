@@ -26,33 +26,35 @@ type openAIModelListResponse struct {
 }
 
 var supportedOpenAIModels = []openAIModelInfo{
-	{ID: "gemini-3-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.5-flash-lite", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.1-pro-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.5-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	// Gemini 3.8 series (supported upstream as gemini-3.8-flash-tiered)
 	{ID: "gemini-3.8-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
 	{ID: "gemini-3.8-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
 	{ID: "gemini-3.8-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.8-flash-tiered", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.8-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
+
+	// Gemini 3.7 series
 	{ID: "gemini-3.7-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
 	{ID: "gemini-3.7-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
 	{ID: "gemini-3.7-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.6-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.6-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.6-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-pro-agent", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "claude-opus-4-6-thinking", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "claude-sonnet-4-6-thinking", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
+	{ID: "gemini-3.7-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	// Gemini 3 series
+	{ID: "gemini-3-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3-pro-image", Object: "model", Created: 1700000000, OwnedBy: "google"},
+
+	// Gemini 3.1 Pro series
+	{ID: "gemini-3.1-pro-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.1-pro", Object: "model", Created: 1700000000, OwnedBy: "google"},
+
+	// Claude series (hosted on Google Cloud Code)
 	{ID: "claude-sonnet-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
 	{ID: "claude-3-7-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
 	{ID: "claude-3-5-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "gpt-oss-120b-medium", Object: "model", Created: 1700000000, OwnedBy: "openai"},
-	{ID: "gpt-4o", Object: "model", Created: 1700000000, OwnedBy: "openai"},
-	{ID: "gpt-4o-mini", Object: "model", Created: 1700000000, OwnedBy: "openai"},
-	{ID: "gpt-4", Object: "model", Created: 1700000000, OwnedBy: "openai"},
-	{ID: "gpt-3.5-turbo", Object: "model", Created: 1700000000, OwnedBy: "openai"},
+	{ID: "claude-opus-4-6-thinking", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
+	{ID: "claude-opus-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
+
+	// Open-source models
+	{ID: "gpt-oss-120b-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
 }
 
 // handleOpenAIModels returns the list of supported models in OpenAI catalog format,

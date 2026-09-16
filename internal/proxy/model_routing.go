@@ -28,7 +28,7 @@ func ResolveModel(requestedModel string) string {
 		strings.HasPrefix(lower, "claude-3-5-sonnet") ||
 		strings.HasPrefix(lower, "claude-sonnet-4-6") ||
 		strings.HasPrefix(lower, "claude-sonnet-4-5") {
-		return "claude-sonnet-4-6-thinking"
+		return "claude-sonnet-4-6"
 	}
 
 	// Claude Opus variants
@@ -41,35 +41,27 @@ func ResolveModel(requestedModel string) string {
 	// Claude Haiku variants
 	if strings.HasPrefix(lower, "claude-3-haiku") ||
 		strings.HasPrefix(lower, "claude-haiku-4") {
-		return "claude-sonnet-4-6-thinking"
+		return "claude-sonnet-4-6"
 	}
 
-	// OpenAI GPT variants
-	if strings.HasPrefix(lower, "gpt-4o") ||
+	// OpenAI ChatGPT / GPT compatibility fallback (routes gracefully to Gemini Flash)
+	if strings.HasPrefix(lower, "chatgpt") ||
 		strings.HasPrefix(lower, "gpt-4") ||
-		strings.HasPrefix(lower, "gpt-3.5-turbo") {
+		strings.HasPrefix(lower, "gpt-3.5") ||
+		strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3") {
 		return "gemini-3-flash"
 	}
 
 	// Gemini Pro variants
 	if strings.HasPrefix(lower, "gemini-2.5-pro") ||
 		strings.HasPrefix(lower, "gemini-3.1-pro") {
-		return "gemini-3.1-pro-high"
+		return "gemini-3.1-pro-low"
 	}
 
-	// Gemini Flash variants (including Hermes 3.6, 3.7, 3.8 flash)
-	if strings.Contains(lower, "low") || strings.Contains(lower, "lite") {
-		return "gemini-3.5-flash-lite"
-	}
-	if strings.Contains(lower, "high") && strings.Contains(lower, "flash") {
-		return "gemini-3.5-flash-high"
-	}
-	if strings.HasPrefix(lower, "gemini-3.8-flash") ||
-		strings.HasPrefix(lower, "gemini-3.7-flash") ||
-		strings.HasPrefix(lower, "gemini-3.6-flash") ||
-		strings.HasPrefix(lower, "gemini-3.5-flash") ||
-		strings.HasPrefix(lower, "gemini-3-flash") ||
-		strings.HasPrefix(lower, "gemini-2.5-flash") {
+	// All Gemini Flash variants (3.8, 3.7, 3.6, 3.5, 3.0, 2.5, 2.0, low, extra-low, lite, high, medium, etc.)
+	// route to active gemini-3-flash (as Google decommissioned 3.5-flash-* engines)
+	if strings.Contains(lower, "flash") || strings.Contains(lower, "lite") {
 		return "gemini-3-flash"
 	}
 

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	Version = "1.0.0"
+	Version = "1.0.1"
 
 	defaultProxyPort = "8045"
 	defaultAdminPort = "8046"
@@ -396,10 +396,13 @@ func resolveConfigDir(dir string) string {
 func normalizeListenAddr(addr string) string {
 	s := strings.TrimSpace(addr)
 	if s == "" {
-		return ":" + defaultProxyPort
+		return "127.0.0.1:" + defaultProxyPort
+	}
+	if strings.HasPrefix(s, ":") {
+		return "127.0.0.1" + s
 	}
 	if !strings.Contains(s, ":") {
-		return ":" + s
+		return "127.0.0.1:" + s
 	}
 	return s
 }

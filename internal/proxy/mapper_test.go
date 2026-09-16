@@ -16,11 +16,11 @@ func TestMapper_ResolveModel(t *testing.T) {
 		expected string
 	}{
 		// Claude Sonnet variants
-		{"claude-3-7-sonnet-20250219", "claude-sonnet-4-6-thinking"},
-		{"claude-3-5-sonnet-20241022", "claude-sonnet-4-6-thinking"},
-		{"claude-sonnet-4-6", "claude-sonnet-4-6-thinking"},
-		{"claude-sonnet-4-5-20250101", "claude-sonnet-4-6-thinking"},
-		{"claude-3-7-sonnet", "claude-sonnet-4-6-thinking"},
+		{"claude-3-7-sonnet-20250219", "claude-sonnet-4-6"},
+		{"claude-3-5-sonnet-20241022", "claude-sonnet-4-6"},
+		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
+		{"claude-sonnet-4-5-20250101", "claude-sonnet-4-6"},
+		{"claude-3-7-sonnet", "claude-sonnet-4-6"},
 
 		// Claude Opus variants
 		{"claude-3-opus-20240229", "claude-opus-4-6-thinking"},
@@ -28,8 +28,8 @@ func TestMapper_ResolveModel(t *testing.T) {
 		{"claude-opus-4-5-20250201", "claude-opus-4-6-thinking"},
 
 		// Claude Haiku variants
-		{"claude-3-haiku-20240307", "claude-sonnet-4-6-thinking"},
-		{"claude-haiku-4", "claude-sonnet-4-6-thinking"},
+		{"claude-3-haiku-20240307", "claude-sonnet-4-6"},
+		{"claude-haiku-4", "claude-sonnet-4-6"},
 
 		// OpenAI GPT variants
 		{"gpt-4o", "gemini-3-flash"},
@@ -40,20 +40,36 @@ func TestMapper_ResolveModel(t *testing.T) {
 		{"gpt-3.5-turbo-0125", "gemini-3-flash"},
 
 		// Gemini Pro variants
-		{"gemini-2.5-pro", "gemini-3.1-pro-high"},
-		{"gemini-2.5-pro-preview", "gemini-3.1-pro-high"},
-		{"gemini-3.1-pro", "gemini-3.1-pro-high"},
-		{"gemini-3.1-pro-preview", "gemini-3.1-pro-high"},
+		{"gemini-2.5-pro", "gemini-3.1-pro-low"},
+		{"gemini-2.5-pro-preview", "gemini-3.1-pro-low"},
+		{"gemini-3.1-pro", "gemini-3.1-pro-low"},
+		{"gemini-3.1-pro-preview", "gemini-3.1-pro-low"},
 
 		// Gemini Flash variants
 		{"gemini-2.5-flash", "gemini-3-flash"},
 		{"gemini-3-flash", "gemini-3-flash"},
-		{"gemini-3.5-flash-high", "gemini-3.5-flash-high"},
-		{"gemini-3.5-flash-high-preview", "gemini-3.5-flash-high"},
+		{"gemini-3.8-flash", "gemini-3-flash"},
+		{"gemini-3.8-flash-high", "gemini-3-flash"},
+		{"gemini-3.8-flash-medium", "gemini-3-flash"},
+		{"gemini-3.8-flash-low", "gemini-3-flash"},
+		{"gemini-3.5-flash-high", "gemini-3-flash"},
+		{"gemini-3.5-flash-high-preview", "gemini-3-flash"},
+		{"gemini-3.7-flash-high", "gemini-3-flash"},
+		{"gemini-3.7-flash-medium", "gemini-3-flash"},
+		{"gemini-3.7-flash-low", "gemini-3-flash"},
+		{"gemini-3.5-flash-medium", "gemini-3-flash"},
+		{"gemini-3.5-flash-low", "gemini-3-flash"},
+		{"gemini-3.5-flash-extra-low", "gemini-3-flash"},
+
+		// ChatGPT & OpenAI compatibility variants
+		{"chatgpt", "gemini-3-flash"},
+		{"chatgpt-4o-latest", "gemini-3-flash"},
+		{"o1-mini", "gemini-3-flash"},
+		{"o3-mini", "gemini-3-flash"},
 
 		// Passthrough
 		{"gemini-pro-agent", "gemini-pro-agent"},
-		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6-thinking"},
+		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6"},
 		{"custom-fine-tuned-model", "custom-fine-tuned-model"},
 		{"", "gemini-3-flash"},
 	}
@@ -494,8 +510,8 @@ func TestMapper_AnthropicToGemini_BasicAndSystem(t *testing.T) {
 		t.Fatal("MapAnthropicToGemini returned nil")
 	}
 
-	if internalReq.Model != "claude-sonnet-4-6-thinking" {
-		t.Errorf("model = %q, want 'claude-sonnet-4-6-thinking'", internalReq.Model)
+	if internalReq.Model != "claude-sonnet-4-6" {
+		t.Errorf("model = %q, want 'claude-sonnet-4-6'", internalReq.Model)
 	}
 
 	// System instruction check

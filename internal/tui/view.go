@@ -190,14 +190,34 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 		return b.String()
 	}
 
-	const maxDisplayLogs = 30
+	const maxDisplayLogs = 35
 	start := 0
 	if len(logs) > maxDisplayLogs {
 		start = len(logs) - maxDisplayLogs
 	}
 	recent := logs[start:]
 
-	for _, entry := range recent {
+	effectiveWidth := width
+	if effectiveWidth < 100 {
+		effectiveWidth = 125
+	}
+
+	// Dynamic column layout:
+	// TIME (8) + METHOD (4) + STATUS (3) + DURATION (6) + PATH (24) + ACCOUNT (12)
+	// 6 vertical separators " │ " = 18 chars + 2 leading indent = 77 fixed chars.
+	// Remaining width goes to MODEL column.
+	accountWidth := 12
+	pathWidth := 24
+	fixedWidth := 77
+
+	modelWidth := effectiveWidth - fixedWidth
+	if modelWidth < 30 {
+		modelWidth = 30
+	}
+
+	sep := gridSepStyle.Render("│")
+
+	for i, entry := range recent {
 		ts := entry.Timestamp.Format("15:04:05")
 		method := methodStyle.Render(fmt.Sprintf("%-4s", entry.Method))
 
@@ -210,18 +230,35 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 		statusStr := statusStyle.Render(fmt.Sprintf("%3d", entry.Status))
 
 		durStr := fmt.Sprintf("%-6s", formatDuration(entry.Duration))
-		modelStr := modelStyle.Render(fmt.Sprintf("%-18s", truncateString(entry.Model, 18)))
-		pathStr := fmt.Sprintf("%-22s", truncateString(entry.Path, 22))
-		accountStr := truncateString(entry.AccountEmail, 28)
 
-		line := fmt.Sprintf("  %s  %s  %s  %s  %s  %s  %s",
-			ts, method, statusStr, durStr, modelStr, pathStr, accountStr)
+		displayModel := entry.Model
+		if entry.TargetModel != "" && entry.TargetModel != entry.Model {
+			displayModel = fmt.Sprintf("%s → %s", entry.Model, entry.TargetModel)
+		}
+
+		modelStr := modelStyle.Render(fmt.Sprintf("%-*s", modelWidth, truncateString(displayModel, modelWidth)))
+		pathStr := fmt.Sprintf("%-*s", pathWidth, truncateString(entry.Path, pathWidth))
+		accountStr := fmt.Sprintf("%-*s", accountWidth, truncateString(shortAccount(entry.AccountEmail), accountWidth))
+
+		line := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s %s %s %s %s",
+			ts, sep, method, sep, statusStr, sep, durStr, sep, modelStr, sep, pathStr, sep, accountStr)
+
+		if i%2 == 1 {
+			line = gridRowOddStyle.Render(line)
+		}
 
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+func shortAccount(email string) string {
+	if idx := strings.Index(email, "@"); idx != -1 {
+		return email[:idx]
+	}
+	return email
 }
 
 func renderFooter(actionMsg string, isErr bool) string {

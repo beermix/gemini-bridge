@@ -50,8 +50,8 @@ type Model struct {
 func NewModel(client AdminAPI) Model {
 	return Model{
 		client: client,
-		width:  80,
-		height: 24,
+		width:  125,
+		height: 35,
 	}
 }
 

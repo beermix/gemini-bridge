@@ -116,11 +116,19 @@ var (
 	modelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#B088FF"))
 
+	// Subtle Grid Styles
+	colorGrid = lipgloss.Color("#2A283C")
+
+	gridSepStyle = lipgloss.NewStyle().
+			Foreground(colorGrid)
+
+	gridRowOddStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#141320"))
+
 	// Footer Styles
 	helpFooterStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			PaddingTop(1)
-
 	feedbackSuccessStyle = lipgloss.NewStyle().
 				Foreground(colorSecondary).
 				Bold(true)
