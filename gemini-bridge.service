@@ -1,0 +1,19 @@
+[Unit]
+Description=Gemini Bridge VPS Proxy for hermes-agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/gemini-bridge
+ExecStart=/root/gemini-bridge/gemini-bridge serve -port 8045 -admin-port 8046 -config-dir /root/gemini-bridge
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Optional environment variables (can also be passed as CLI flags)
+# Environment=PROXY_API_KEY=sk-antigravity
+# Environment=HTTPS_PROXY=http://proxy-host:port
+
+[Install]
+WantedBy=multi-user.target

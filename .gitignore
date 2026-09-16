@@ -1,0 +1,15 @@
+bin/
+dist/
+*.exe
+*.test
+*.log
+*.tar.gz
+sha256sums.txt
+.env
+.env.*
+accounts.json
+config.json
+cloud-accounts-cache.json
+cloud-accounts-export-*.json
+.DS_Store
+

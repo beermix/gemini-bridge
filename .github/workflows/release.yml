@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Determine Version
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=v1.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Multiplatform Binaries
+        env:
+          VERSION: ${{ steps.vars.outputs.VERSION }}
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+
+          # Linux AMD64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/gemini-bridge-linux-amd64 ./cmd/gemini-bridge
+
+          # Linux ARM64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/gemini-bridge-linux-arm64 ./cmd/gemini-bridge
+
+          # Windows AMD64
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/gemini-bridge-windows-amd64.exe ./cmd/gemini-bridge
+
+          # macOS ARM64 (Apple Silicon)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/gemini-bridge-darwin-arm64 ./cmd/gemini-bridge
+
+          # macOS AMD64 (Intel)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/gemini-bridge-darwin-amd64 ./cmd/gemini-bridge
+
+      - name: Create Tarballs and Checksums
+        env:
+          VERSION: ${{ steps.vars.outputs.VERSION }}
+        run: |
+          cd dist
+
+          # Package Linux AMD64
+          mkdir -p package-linux-amd64
+          cp gemini-bridge-linux-amd64 package-linux-amd64/gemini-bridge
+          cp ../gemini-bridge.service package-linux-amd64/
+          cp ../README.md package-linux-amd64/
+          cp ../LICENSE package-linux-amd64/
+          tar -czf "gemini-bridge-${VERSION}-linux-amd64.tar.gz" -C package-linux-amd64 .
+
+          # Package Linux ARM64
+          mkdir -p package-linux-arm64
+          cp gemini-bridge-linux-arm64 package-linux-arm64/gemini-bridge
+          cp ../gemini-bridge.service package-linux-arm64/
+          cp ../README.md package-linux-arm64/
+          cp ../LICENSE package-linux-arm64/
+          tar -czf "gemini-bridge-${VERSION}-linux-arm64.tar.gz" -C package-linux-arm64 .
+
+          # Clean up temporary packaging dirs
+          rm -rf package-linux-amd64 package-linux-arm64
+
+          # Compute SHA-256 Checksums
+          sha256sum * > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Publish Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Release ${{ steps.vars.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/gemini-bridge-linux-amd64
+            dist/gemini-bridge-linux-arm64
+            dist/gemini-bridge-windows-amd64.exe
+            dist/gemini-bridge-darwin-arm64
+            dist/gemini-bridge-darwin-amd64
+            dist/*.tar.gz
+            dist/sha256sums.txt
