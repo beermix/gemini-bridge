@@ -5,7 +5,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/beermix/gemini-bridge)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **gemini-bridge** — высокопроизводительный сервис-прокси и мост, **разработанный специально для использования с автономным AI-агентом [hermes-agent](https://github.com/nousresearch/hermes-agent)** (а также с любыми OpenAI / Anthropic SDK). Он обеспечивает стабильный доступ к Google Antigravity Cloud Code с поддержкой пула аккаунтов, автоматической ротации (Round-Robin), закрепления (Pinning), отказоустойчивости (Auto-Failover / Cooldown при HTTP 429) и автоматического восстановления вызовов инструментов (Tool Call Leakage Recovery).
+> **gemini-bridge** — высокопроизводительный сервис-прокси и мост, **разработанный специально для использования с автономным AI-агентом [hermes-agent](https://github.com/nousresearch/hermes-agent)** (а также с любыми OpenAI / Anthropic SDK). Он обеспечивает стабильный доступ к Google Antigravity Cloud Code с поддержкой пула аккаунтов, автоматической фиксации (Sticky для сохранения кэша промптов), закрепления (Pinning), отказоустойчивости (Auto-Failover / Cooldown при HTTP 429) и автоматического восстановления вызовов инструментов (Tool Call Leakage Recovery).
 
 > [!IMPORTANT]
 > **Для работы сервиса необходимо экспортировать аккаунты через [AntigravityManager](https://github.com/Draculabo/AntigravityManager)**.
@@ -52,7 +52,7 @@ chmod +x /usr/local/bin/gemini-bridge
 - **Полная совместимость с OpenAI API**: эндпоинты `/v1/chat/completions` и `/v1/models` с поддержкой потоковой передачи (Server-Sent Events), вызова инструментов (Tool Calling / Function Calling) и изображений (Vision).
 - **Полная совместимость с Anthropic API**: эндпоинт `/v1/messages` с потоковыми событиями (`message_start`, `content_block_delta`, `message_delta`), блоками рассуждений (`thinking`) и вызовом функций.
 - **Пул аккаунтов Antigravity Cloud Code**: загрузка аккаунтов, экспортированных через [AntigravityManager](https://github.com/Draculabo/AntigravityManager) (файлы `cloud-accounts-export-*.json` или `accounts.json`), автоматический кэш `cloud-accounts-cache.json`.
-- **Балансировка нагрузки и ротация**: режим Round-Robin между активными аккаунтами.
+- **Оптимизация контекста и кэша**: режим Sticky-until-error (запросы идут на один аккаунт для максимального попадания в серверный кэш промптов Google, а при лимитах или ошибках происходит мгновенный автопереход на следующий).
 - **Закрепление аккаунтов (Pinning) с персистентностью**: закрепленный аккаунт сохраняется в `config.json` и восстанавливается после перезагрузки VPS или перезапуска службы.
 - **Интеллектуальный Cooldown при 429**: при превышении квоты (HTTP 429) аккаунт временно переводится в cooldown (по умолчанию 300с), а запрос автоматически перенаправляется на следующий доступный аккаунт пула.
 - **Автообновление токенов**: автоматическое продление OAuth токенов до их истечения и автоматическое получение `project_id`.
@@ -250,7 +250,7 @@ gemini-bridge tui
 | `↑` / `k` | Перемещение курсора вверх |
 | `↓` / `j` | Перемещение курсора вниз |
 | `Enter` или `p` | **Закрепить (Pin)**: перенаправлять все запросы только на выбранный аккаунт (сохраняется в `config.json`) |
-| `u` | **Снять закрепление (Unpin)**: вернуться в режим автоматического Round-Robin (сохраняется в `config.json`) |
+| `u` | **Снять закрепление (Unpin)**: вернуться в автоматический режим Sticky (сохраняется в `config.json`) |
 | `r` | **Обновить токен**: принудительно обновить OAuth токен выбранного аккаунта |
 | `R` | **Перечитать конфигурацию**: пересканировать каталог аккаунтов на диске без рестарта |
 | `q` / `Esc` / `Ctrl+C` | Выйти из TUI (фоновый прокси-сервис продолжит работу) |
@@ -270,7 +270,7 @@ gemini-bridge status
 ================================================================
  Gemini-Bridge Service Status (http://127.0.0.1:8046)
 ================================================================
-Mode     : ROUND-ROBIN
+Mode     : STICKY
 Uptime   : 2h 45m
 Requests : Total: 1420 | Success: 1412 | 429 Cooldown: 6 | Errors: 2
 ----------------------------------------------------------------
@@ -306,7 +306,7 @@ gemini-bridge status -json
 Локальный внутренний API для TUI и внешнего мониторинга:
 
 - `GET /api/status` — полный статус сервиса, режим работы, список аккаунтов и статистика.
-- `POST /api/select` — закрепление аккаунта или возврат в Round-Robin (`{"account_id":"...", "unpin":false}`).
+- `POST /api/select` — закрепление аккаунта или возврат в Sticky-режим (`{"account_id":"...", "unpin":false}`).
 - `POST /api/reload` — горячая перезагрузка файлов аккаунтов с диска.
 - `POST /api/refresh` — обновление OAuth токена конкретного аккаунта (`{"account_id":"..."}`).
 

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	Version = "1.0.1"
+	Version = "1.0.2"
 
 	defaultProxyPort = "8045"
 	defaultAdminPort = "8046"
@@ -322,7 +322,7 @@ func printUsage() {
 	printVersion()
 	fmt.Println(`
 A high-performance VPS proxy bridge connecting AI agents (hermes-agent, OpenAI SDK, Anthropic SDK)
-to Google Antigravity Cloud Code accounts with multi-account round-robin and auto-failover.
+to Google Antigravity Cloud Code accounts with sticky-until-error routing and auto-failover.
 
 Usage:
   gemini-bridge [subcommand] [flags]

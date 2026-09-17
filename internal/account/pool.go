@@ -45,7 +45,7 @@ func NewPool(loader AccountLoader, configDir string) (*Pool, error) {
 			}
 		}
 		if pinnedID == "" {
-			log.Printf("Warning: pinned account %q not found in loaded accounts from %s, using round-robin", pid, configDir)
+			log.Printf("Warning: pinned account %q not found in loaded accounts from %s, using sticky mode", pid, configDir)
 		}
 	}
 

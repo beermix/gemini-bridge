@@ -89,7 +89,7 @@ func (c *AdminClient) PinAccount(accountID string) error {
 	return c.postJSON("/api/select", body)
 }
 
-// Unpin clears pinned account selection, returning the server to round-robin.
+// Unpin clears pinned account selection, returning the server to sticky mode.
 func (c *AdminClient) Unpin() error {
 	body := SelectRequest{
 		Unpin: true,
