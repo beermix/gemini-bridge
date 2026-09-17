@@ -1169,9 +1169,16 @@ func TestMapper_OpenAIToGemini_DuplicateToolCallID(t *testing.T) {
 	res := proxy.MapOpenAIToGemini(req, "test-proj")
 	contents := res.Request.Contents
 
-	// Expect 5 turns (tool result user + next user message merge into one turn)
-	if len(contents) != 5 {
-		t.Fatalf("expected 5 turns, got %d", len(contents))
+	// Expect 7 turns:
+	// Turn 0: user "Run step 1"
+	// Turn 1: assistant tool call 1
+	// Turn 2: tool result 1
+	// Turn 3: model InterruptedResponsePlaceholder (separating tool result from subsequent user text)
+	// Turn 4: user "Run step 2"
+	// Turn 5: assistant tool call 2
+	// Turn 6: tool result 2
+	if len(contents) != 7 {
+		t.Fatalf("expected 7 turns, got %d", len(contents))
 	}
 
 	// Turn 1: assistant tool call 1 -> ID should be "call_dup_123", Name "terminal"
@@ -1186,14 +1193,19 @@ func TestMapper_OpenAIToGemini_DuplicateToolCallID(t *testing.T) {
 		t.Errorf("expected fr1.ID == 'call_dup_123' and Name == 'terminal', got %+v", fr1)
 	}
 
-	// Turn 3: assistant tool call 2 -> ID should be remapped to "call_dup_123_d2", Name "write_file"
-	fc2 := contents[3].Parts[0].FunctionCall
+	// Turn 3: model InterruptedResponsePlaceholder
+	if contents[3].Role != "model" || len(contents[3].Parts) == 0 || contents[3].Parts[0].Text != proxy.InterruptedResponsePlaceholder {
+		t.Errorf("expected turn 3 to be model with InterruptedResponsePlaceholder, got %+v", contents[3])
+	}
+
+	// Turn 5: assistant tool call 2 -> ID should be remapped to "call_dup_123_d2", Name "write_file"
+	fc2 := contents[5].Parts[0].FunctionCall
 	if fc2 == nil || fc2.ID != "call_dup_123_d2" || fc2.Name != "write_file" {
 		t.Errorf("expected fc2.ID == 'call_dup_123_d2' and Name == 'write_file', got %+v", fc2)
 	}
 
-	// Turn 4: tool result 2 -> ID should match remapped "call_dup_123_d2", Name "write_file"
-	fr2 := contents[4].Parts[0].FunctionResponse
+	// Turn 6: tool result 2 -> ID should match remapped "call_dup_123_d2", Name "write_file"
+	fr2 := contents[6].Parts[0].FunctionResponse
 	if fr2 == nil || fr2.ID != "call_dup_123_d2" || fr2.Name != "write_file" {
 		t.Errorf("expected fr2.ID == 'call_dup_123_d2' and Name == 'write_file', got %+v", fr2)
 	}

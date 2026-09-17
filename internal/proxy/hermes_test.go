@@ -551,3 +551,279 @@ func TestHermes_ClientDisconnect_ContextCancellation(t *testing.T) {
 	buf := make([]byte, 1024)
 	_, _ = resp.Body.Read(buf)
 }
+
+// 7. TestHermes_ModelMetadataProbe verifies /v1/models/gemini-3-flash returns context_length: 1048576
+func TestHermes_ModelMetadataProbe(t *testing.T) {
+	acc := makeDefaultAccount("acc-1", "hermes@test.com")
+	srv, proxyHTTP, upstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {}, []*account.CloudAccount{acc}, "test-key")
+	defer proxyHTTP.Close()
+	defer upstream.Close()
+	_ = srv
+
+	client := proxyHTTP.Client()
+
+	// Single model probe
+	req, _ := http.NewRequest(http.MethodGet, proxyHTTP.URL+"/v1/models/gemini-3-flash", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("model probe failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var modelData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&modelData); err != nil {
+		t.Fatalf("failed to decode model info: %v", err)
+	}
+
+	if cl, ok := modelData["context_length"].(float64); !ok || int(cl) != 1048576 {
+		t.Errorf("expected context_length 1048576, got %v", modelData["context_length"])
+	}
+	if mt, ok := modelData["max_tokens"].(float64); !ok || int(mt) != 65536 {
+		t.Errorf("expected max_tokens 65536, got %v", modelData["max_tokens"])
+	}
+	if mcl, ok := modelData["max_context_length"].(float64); !ok || int(mcl) != 1048576 {
+		t.Errorf("expected max_context_length 1048576, got %v", modelData["max_context_length"])
+	}
+}
+
+// 8. TestHermes_InterruptedResponsePlaceholder_ToolResultAlternation verifies tool result + human text separation
+func TestHermes_InterruptedResponsePlaceholder_ToolResultAlternation(t *testing.T) {
+	req := &proxy.OpenAIChatRequest{
+		Model: "gemini-3-flash",
+		Messages: []proxy.OpenAIMessage{
+			{Role: "user", Content: "Do step 1"},
+			{
+				Role: "assistant",
+				ToolCalls: []proxy.OpenAIToolCall{
+					{
+						ID:   "call_cmd_1",
+						Type: "function",
+						Function: proxy.OpenAIFunctionCall{
+							Name:      "terminal",
+							Arguments: `{"cmd":"pwd"}`,
+						},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_cmd_1",
+				Name:       "terminal",
+				Content:    "/root/hermes",
+			},
+			{Role: "user", Content: "Great, now check git status"},
+		},
+	}
+
+	res := proxy.MapOpenAIToGemini(req, "test-proj")
+	contents := res.Request.Contents
+
+	// Expected:
+	// Turn 0: user "Do step 1"
+	// Turn 1: model tool call "terminal"
+	// Turn 2: user tool response
+	// Turn 3: model InterruptedResponsePlaceholder
+	// Turn 4: user "Great, now check git status"
+	if len(contents) != 5 {
+		t.Fatalf("expected 5 turns, got %d", len(contents))
+	}
+
+	if contents[2].Role != "user" || len(contents[2].Parts) != 1 || contents[2].Parts[0].FunctionResponse == nil {
+		t.Fatalf("expected turn 2 to be user with FunctionResponse, got %+v", contents[2])
+	}
+
+	if contents[3].Role != "model" || len(contents[3].Parts) != 1 || contents[3].Parts[0].Text != proxy.InterruptedResponsePlaceholder {
+		t.Fatalf("expected turn 3 to be model placeholder %q, got %+v", proxy.InterruptedResponsePlaceholder, contents[3])
+	}
+
+	if contents[4].Role != "user" || len(contents[4].Parts) != 1 || contents[4].Parts[0].Text != "Great, now check git status" {
+		t.Fatalf("expected turn 4 to be human user prompt, got %+v", contents[4])
+	}
+}
+
+// 9. TestHermes_CompositeToolCallID_Resolution verifies Hermes composite ID (id|response_id) resolution and tool fallback
+func TestHermes_CompositeToolCallID_Resolution(t *testing.T) {
+	req := &proxy.OpenAIChatRequest{
+		Model: "gemini-3-flash",
+		Messages: []proxy.OpenAIMessage{
+			{Role: "user", Content: "Hi"},
+			{
+				Role: "assistant",
+				ToolCalls: []proxy.OpenAIToolCall{
+					{
+						ID:   "call_composite_123|resp_part_456",
+						Type: "function",
+						Function: proxy.OpenAIFunctionCall{
+							Name:      "read_file",
+							Arguments: `{"path":"a.txt"}`,
+						},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_composite_123", // stripped by Hermes
+				Content:    "content of a.txt",
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "unknown_call_id", // unknown call ID fallback
+				Content:    "fallback result",
+			},
+		},
+		Tools: []proxy.OpenAITool{
+			{
+				Type: "function",
+				Function: proxy.OpenAIFunction{
+					Name: "read_file",
+				},
+			},
+		},
+	}
+
+	res := proxy.MapOpenAIToGemini(req, "test-proj")
+	contents := res.Request.Contents
+
+	if len(contents) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(contents))
+	}
+
+	// In turn 2 (the tool responses user turn):
+	turn2 := contents[2]
+	if len(turn2.Parts) != 2 {
+		t.Fatalf("expected 2 function responses, got %d", len(turn2.Parts))
+	}
+
+	fr1 := turn2.Parts[0].FunctionResponse
+	if fr1 == nil || fr1.Name != "read_file" {
+		t.Errorf("expected composite ID to resolve name 'read_file', got %+v", fr1)
+	}
+
+	fr2 := turn2.Parts[1].FunctionResponse
+	if fr2 == nil || fr2.Name == "" {
+		t.Errorf("expected fallback name to not be empty, got %+v", fr2)
+	}
+}
+
+// 10. TestHermes_RefSchemaProtection_Wrapping verifies $ref in tool result is wrapped as output string
+func TestHermes_RefSchemaProtection_Wrapping(t *testing.T) {
+	refContent := `{"$ref":"#/$defs/MySchema","data":{"foo":"bar"}}`
+	req := &proxy.OpenAIChatRequest{
+		Model: "gemini-3-flash",
+		Messages: []proxy.OpenAIMessage{
+			{
+				Role:       "tool",
+				ToolCallID: "call_ref_1",
+				Name:       "get_schema",
+				Content:    refContent,
+			},
+		},
+	}
+
+	res := proxy.MapOpenAIToGemini(req, "test-proj")
+	contents := res.Request.Contents
+	if len(contents) != 1 || len(contents[0].Parts) != 1 {
+		t.Fatalf("expected 1 turn with 1 part, got %+v", contents)
+	}
+
+	fr := contents[0].Parts[0].FunctionResponse
+	if fr == nil {
+		t.Fatal("expected function response")
+	}
+
+	if outStr, ok := fr.Response["output"].(string); !ok || outStr != refContent {
+		t.Errorf("expected response to be wrapped as output string, got %+v", fr.Response)
+	}
+}
+
+// 11. TestHermes_ModelSuffixThinkingLevel verifies -high, -medium, -low suffixes in req.Model
+func TestHermes_ModelSuffixThinkingLevel(t *testing.T) {
+	tests := []struct {
+		model         string
+		expectedLevel string
+	}{
+		{"gemini-3-flash-high", "HIGH"},
+		{"gemini-3-flash-medium", "MEDIUM"},
+		{"gemini-3-flash-low", "LOW"},
+	}
+
+	for _, tc := range tests {
+		req := &proxy.OpenAIChatRequest{
+			Model:    tc.model,
+			Messages: []proxy.OpenAIMessage{{Role: "user", Content: "Hi"}},
+		}
+		res := proxy.MapOpenAIToGemini(req, "test-proj")
+		cfg := res.Request.GenerationConfig.ThinkingConfig
+		if cfg == nil || cfg.ThinkingLevel != tc.expectedLevel {
+			t.Errorf("model %s: expected ThinkingLevel %s, got %+v", tc.model, tc.expectedLevel, cfg)
+		}
+	}
+}
+
+// 12. TestHermes_Streaming_ChunkRoleAndFinishReason verifies chunk 0 role and finish_reason preservation
+func TestHermes_Streaming_ChunkRoleAndFinishReason(t *testing.T) {
+	// Chunk 1: delivers tool call
+	cand1 := &google.Candidate{
+		Index: 0,
+		Content: google.GeminiContent{
+			Parts: []google.GeminiPart{
+				{
+					FunctionCall: &google.FunctionCall{
+						ID:   "call_1",
+						Name: "run_test",
+						Args: map[string]interface{}{"param": 1},
+					},
+				},
+			},
+		},
+	}
+
+	opts1 := proxy.OpenAIChunkOptions{
+		IsFirstChunk:        true,
+		HasEmittedToolCalls: false,
+	}
+	b1, hadTools1 := proxy.FormatOpenAIChunkWithOptions("stream-1", "gemini-3-flash", cand1, nil, opts1)
+	if !hadTools1 {
+		t.Error("expected hadTools1 to be true")
+	}
+
+	var chunk1 proxy.OpenAIChatResponse
+	cleanLine1 := strings.TrimPrefix(strings.TrimSpace(string(b1)), "data: ")
+	if err := json.Unmarshal([]byte(cleanLine1), &chunk1); err != nil {
+		t.Fatalf("failed to unmarshal chunk1: %v", err)
+	}
+	if chunk1.Choices[0].Delta.Role != "assistant" {
+		t.Errorf("expected chunk1 to have role 'assistant', got %q", chunk1.Choices[0].Delta.Role)
+	}
+
+	// Chunk 2: delivers finishReason STOP, no parts
+	cand2 := &google.Candidate{
+		Index:        0,
+		FinishReason: "STOP",
+	}
+	opts2 := proxy.OpenAIChunkOptions{
+		IsFirstChunk:        false,
+		HasEmittedToolCalls: true,
+	}
+	b2, _ := proxy.FormatOpenAIChunkWithOptions("stream-1", "gemini-3-flash", cand2, nil, opts2)
+
+	var chunk2 proxy.OpenAIChatResponse
+	cleanLine2 := strings.TrimPrefix(strings.TrimSpace(string(b2)), "data: ")
+	if err := json.Unmarshal([]byte(cleanLine2), &chunk2); err != nil {
+		t.Fatalf("failed to unmarshal chunk2: %v", err)
+	}
+
+	// Role should be omitted
+	if chunk2.Choices[0].Delta.Role != "" {
+		t.Errorf("expected chunk2 delta role to be empty, got %q", chunk2.Choices[0].Delta.Role)
+	}
+	// FinishReason should be "tool_calls", NOT "stop"
+	if chunk2.Choices[0].FinishReason == nil || *chunk2.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("expected finish_reason 'tool_calls', got %v", chunk2.Choices[0].FinishReason)
+	}
+}

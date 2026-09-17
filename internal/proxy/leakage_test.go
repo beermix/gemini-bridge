@@ -88,6 +88,20 @@ func TestTryParseLeakedToolCall(t *testing.T) {
 			wantName: "fetch_url",
 			wantArgs: `{"url":"https://google.com"}`,
 		},
+		{
+			name:     "plain call: prefix without default_api",
+			input:    `call:terminal{"command":"ls"}`,
+			wantOk:   true,
+			wantName: "terminal",
+			wantArgs: `{"command":"ls"}`,
+		},
+		{
+			name:     "plain default_api: prefix without call:",
+			input:    `default_api:web_search{"query":"test"}`,
+			wantOk:   true,
+			wantName: "web_search",
+			wantArgs: `{"query":"test"}`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -14,10 +14,14 @@ import (
 )
 
 type openAIModelInfo struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID               string `json:"id"`
+	Object           string `json:"object"`
+	Created          int64  `json:"created"`
+	OwnedBy          string `json:"owned_by"`
+	ContextLength    int    `json:"context_length,omitempty"`
+	MaxContextLength int    `json:"max_context_length,omitempty"`
+	MaxTokens        int    `json:"max_tokens,omitempty"`
+	MaxOutputTokens  int    `json:"max_output_tokens,omitempty"`
 }
 
 type openAIModelListResponse struct {
@@ -25,36 +29,75 @@ type openAIModelListResponse struct {
 	Data   []openAIModelInfo `json:"data"`
 }
 
+const (
+	geminiContextLength = 1048576
+	geminiMaxTokens     = 65536
+	claudeContextLength = 200000
+	claudeMaxTokens     = 8192
+)
+
 var supportedOpenAIModels = []openAIModelInfo{
 	// Gemini 3.8 series (supported upstream as gemini-3.8-flash-tiered)
-	{ID: "gemini-3.8-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.8-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.8-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.8-flash-tiered", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.8-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.8-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.8-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.8-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.8-flash-tiered", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.8-flash", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
 
 	// Gemini 3.7 series
-	{ID: "gemini-3.7-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.7-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.7-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.7-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.7-flash-high", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.7-flash-medium", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.7-flash-low", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.7-flash", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
 	// Gemini 3 series
-	{ID: "gemini-3-flash", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3-pro-image", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3-flash", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3-pro-image", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
 
 	// Gemini 3.1 Pro series
-	{ID: "gemini-3.1-pro-low", Object: "model", Created: 1700000000, OwnedBy: "google"},
-	{ID: "gemini-3.1-pro", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gemini-3.1-pro-low", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
+	{ID: "gemini-3.1-pro", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: geminiContextLength, MaxContextLength: geminiContextLength, MaxTokens: geminiMaxTokens, MaxOutputTokens: geminiMaxTokens},
 
 	// Claude series (hosted on Google Cloud Code)
-	{ID: "claude-sonnet-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "claude-3-7-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "claude-3-5-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "claude-opus-4-6-thinking", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
-	{ID: "claude-opus-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic"},
+	{ID: "claude-sonnet-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic", ContextLength: claudeContextLength, MaxContextLength: claudeContextLength, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
+	{ID: "claude-3-7-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic", ContextLength: claudeContextLength, MaxContextLength: claudeContextLength, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
+	{ID: "claude-3-5-sonnet", Object: "model", Created: 1700000000, OwnedBy: "anthropic", ContextLength: claudeContextLength, MaxContextLength: claudeContextLength, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
+	{ID: "claude-opus-4-6-thinking", Object: "model", Created: 1700000000, OwnedBy: "anthropic", ContextLength: claudeContextLength, MaxContextLength: claudeContextLength, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
+	{ID: "claude-opus-4-6", Object: "model", Created: 1700000000, OwnedBy: "anthropic", ContextLength: claudeContextLength, MaxContextLength: claudeContextLength, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
 
 	// Open-source models
-	{ID: "gpt-oss-120b-medium", Object: "model", Created: 1700000000, OwnedBy: "google"},
+	{ID: "gpt-oss-120b-medium", Object: "model", Created: 1700000000, OwnedBy: "google", ContextLength: 131072, MaxContextLength: 131072, MaxTokens: claudeMaxTokens, MaxOutputTokens: claudeMaxTokens},
+}
+
+func resolveModelInfo(modelID string) openAIModelInfo {
+	for _, m := range supportedOpenAIModels {
+		if strings.EqualFold(m.ID, modelID) {
+			return m
+		}
+	}
+
+	ownedBy := "google"
+	ctxLen := geminiContextLength
+	maxTok := geminiMaxTokens
+	lower := strings.ToLower(modelID)
+	if strings.Contains(lower, "claude") {
+		ownedBy = "anthropic"
+		ctxLen = claudeContextLength
+		maxTok = claudeMaxTokens
+	} else if strings.Contains(lower, "gpt-oss") {
+		ctxLen = 131072
+		maxTok = claudeMaxTokens
+	}
+
+	return openAIModelInfo{
+		ID:               modelID,
+		Object:           "model",
+		Created:          1700000000,
+		OwnedBy:          ownedBy,
+		ContextLength:    ctxLen,
+		MaxContextLength: ctxLen,
+		MaxTokens:        maxTok,
+		MaxOutputTokens:  maxTok,
+	}
 }
 
 // handleOpenAIModels returns the list of supported models in OpenAI catalog format,
@@ -71,12 +114,7 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	modelID = strings.Trim(modelID, "/")
 
 	if modelID != "" {
-		info := openAIModelInfo{
-			ID:      modelID,
-			Object:  "model",
-			Created: 1700000000,
-			OwnedBy: "google",
-		}
+		info := resolveModelInfo(modelID)
 		s.recordRequest(RequestLogEntry{
 			Timestamp: startTime,
 			Method:    r.Method,
@@ -272,6 +310,8 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		flusher.Flush()
 
 		streamID := "chatcmpl-" + generateID()
+		isFirstChunk := true
+		hasEmittedToolCalls := false
 
 		processPayload := func(payload []byte) error {
 			geminiResp, err := ParseGeminiChunk(payload)
@@ -285,15 +325,28 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 					if i == len(geminiResp.Candidates)-1 && geminiResp.UsageMetadata.TotalTokenCount > 0 {
 						usage = &geminiResp.UsageMetadata
 					}
-					chunkBytes := FormatOpenAIChunk(streamID, req.Model, &cand, usage)
+					opts := OpenAIChunkOptions{
+						IsFirstChunk:        isFirstChunk,
+						HasEmittedToolCalls: hasEmittedToolCalls,
+					}
+					chunkBytes, candHasTools := FormatOpenAIChunkWithOptions(streamID, req.Model, &cand, usage, opts)
+					if candHasTools {
+						hasEmittedToolCalls = true
+					}
 					if len(chunkBytes) > 0 {
+						isFirstChunk = false
 						_, _ = w.Write(chunkBytes)
 					}
 				}
 				flusher.Flush()
 			} else if geminiResp.UsageMetadata.TotalTokenCount > 0 {
-				chunkBytes := FormatOpenAIChunk(streamID, req.Model, nil, &geminiResp.UsageMetadata)
+				opts := OpenAIChunkOptions{
+					IsFirstChunk:        isFirstChunk,
+					HasEmittedToolCalls: hasEmittedToolCalls,
+				}
+				chunkBytes, _ := FormatOpenAIChunkWithOptions(streamID, req.Model, nil, &geminiResp.UsageMetadata, opts)
 				if len(chunkBytes) > 0 {
+					isFirstChunk = false
 					_, _ = w.Write(chunkBytes)
 					flusher.Flush()
 				}

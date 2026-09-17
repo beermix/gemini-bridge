@@ -12,10 +12,20 @@ import (
 	"gemini-bridge/internal/google"
 )
 
+const (
+	// SkipThoughtSignatureValidator is the official sentinel supported by Cloud Code Assist
+	// and Hermes to bypass thought signature validation for cross-provider tool calls.
+	SkipThoughtSignatureValidator = "skip_thought_signature_validator"
+
+	// InterruptedResponsePlaceholder is interposed between a functionResponse user turn
+	// and a human user text turn to preserve Gemini alternation while preventing text fold.
+	InterruptedResponsePlaceholder = "[The previous response was interrupted before it completed.]"
+)
+
 var (
 	thoughtSigMu      sync.RWMutex
 	thoughtSigCache   = make(map[string]string)
-	defaultThoughtSig = "EuECCt4CARFNMg/G1ZG+HDzVEsL/7Hj6eGFJvlNQY93PBlp9eYygaO+6rj6o5XO2fRWtdVen4RJyDtK7nZOl965Rlr/YNP36i40ff+yaebrAoH+tZ5vQTXfYSgiCvOu4ypWjh7TDCnOTgxqbHod9lEbBoqyZu48c0unb14Ar/d5c2v36WeUfwDglszCRIk0EW9IO+nYSQnrGcXm2wXlS3zO6lfgU8CypECcMLmAzPK9hxHsMhuONj7ziVEKWo5ZL9kOdZXfaURDwSNcQ8hgDAbPPxkYVO0l2fs7hKBoiW4mxawBqYjVVyHacpsdgwqVrBuYA+9pmh+jUoVrIaklGzHhdMujdWPizHcQFWBxMIKAtnzBJdh8uQQyOlFls4l1smbt/PV0cb6Vm9J4j9fUlQv6XFlr3h+a6XKDKlEmctnF43v3L9b6eRPiTGUXQIkF6eU0cXBFkwPOGX779M18kNOiwots="
+	defaultThoughtSig = SkipThoughtSignatureValidator
 	lastThoughtSig    = defaultThoughtSig
 )
 
@@ -24,17 +34,21 @@ func ClearThoughtSignatures() {
 	thoughtSigMu.Lock()
 	defer thoughtSigMu.Unlock()
 	thoughtSigCache = make(map[string]string)
-	lastThoughtSig = ""
+	lastThoughtSig = defaultThoughtSig
 }
 
-// StripThoughtSignatures removes thought signatures from all content parts of a Gemini request.
+// StripThoughtSignatures replaces thought signatures with the skip validator sentinel on functionCall parts.
 func StripThoughtSignatures(req *google.GeminiInternalRequest) {
 	if req == nil {
 		return
 	}
 	for i := range req.Request.Contents {
 		for j := range req.Request.Contents[i].Parts {
-			req.Request.Contents[i].Parts[j].ThoughtSignature = ""
+			if req.Request.Contents[i].Parts[j].FunctionCall != nil {
+				req.Request.Contents[i].Parts[j].ThoughtSignature = SkipThoughtSignatureValidator
+			} else {
+				req.Request.Contents[i].Parts[j].ThoughtSignature = ""
+			}
 		}
 	}
 }
@@ -272,6 +286,9 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 					idRemap[tc.ID] = effectiveID
 					if tc.Function.Name != "" {
 						toolCallIDToName[tc.ID] = tc.Function.Name
+						if parts := strings.Split(tc.ID, "|"); len(parts) > 1 && parts[0] != "" {
+							toolCallIDToName[parts[0]] = tc.Function.Name
+						}
 					}
 				}
 				sig := GetThoughtSignature(tc.ID, tc.Function.Name)
@@ -290,6 +307,18 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 			name := msg.Name
 			if name == "" && msg.ToolCallID != "" {
 				name = toolCallIDToName[msg.ToolCallID]
+				if name == "" {
+					if parts := strings.Split(msg.ToolCallID, "|"); len(parts) > 1 && parts[0] != "" {
+						name = toolCallIDToName[parts[0]]
+					}
+				}
+			}
+			if name == "" {
+				if len(req.Tools) > 0 && req.Tools[0].Function.Name != "" {
+					name = req.Tools[0].Function.Name
+				} else {
+					name = "tool"
+				}
 			}
 			effectiveID := msg.ToolCallID
 			if remapped, ok := idRemap[msg.ToolCallID]; ok && remapped != "" {
@@ -297,14 +326,23 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 			}
 			var respMap map[string]interface{}
 			if str, ok := msg.Content.(string); ok {
-				if err := json.Unmarshal([]byte(str), &respMap); err != nil {
+				if strings.Contains(str, `"$ref"`) || strings.Contains(str, `"$defs"`) {
+					respMap = map[string]interface{}{"output": str}
+				} else if err := json.Unmarshal([]byte(str), &respMap); err != nil {
 					respMap = map[string]interface{}{"result": str}
 				}
 			} else if m, ok := msg.Content.(map[string]interface{}); ok {
-				respMap = m
+				b, _ := json.Marshal(m)
+				if strings.Contains(string(b), `"$ref"`) || strings.Contains(string(b), `"$defs"`) {
+					respMap = map[string]interface{}{"output": string(b)}
+				} else {
+					respMap = m
+				}
 			} else if msg.Content != nil {
 				b, _ := json.Marshal(msg.Content)
-				if err := json.Unmarshal(b, &respMap); err != nil {
+				if strings.Contains(string(b), `"$ref"`) || strings.Contains(string(b), `"$defs"`) {
+					respMap = map[string]interface{}{"output": string(b)}
+				} else if err := json.Unmarshal(b, &respMap); err != nil {
 					respMap = map[string]interface{}{"result": string(b)}
 				}
 			} else {
@@ -328,9 +366,38 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 			continue
 		}
 
-		// Merge adjacent messages with the same role to strictly satisfy Gemini alternating role requirements
+		// Merge adjacent messages with the same role to strictly satisfy Gemini alternating role requirements,
+		// but interpose an interrupted response placeholder between tool results and user text so Gemini
+		// doesn't fold human text into the function response or return empty completions.
 		if len(contents) > 0 && contents[len(contents)-1].Role == role {
-			contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, parts...)
+			prevHasFuncResp := hasFunctionResponse(contents[len(contents)-1])
+			currIsTool := (msg.Role == "tool")
+
+			if prevHasFuncResp && !currIsTool {
+				contents = append(contents, google.GeminiContent{
+					Role: "model",
+					Parts: []google.GeminiPart{{
+						Text: InterruptedResponsePlaceholder,
+					}},
+				})
+				contents = append(contents, google.GeminiContent{
+					Role:  role,
+					Parts: parts,
+				})
+			} else if !prevHasFuncResp && currIsTool {
+				contents = append(contents, google.GeminiContent{
+					Role: "model",
+					Parts: []google.GeminiPart{{
+						Text: InterruptedResponsePlaceholder,
+					}},
+				})
+				contents = append(contents, google.GeminiContent{
+					Role:  role,
+					Parts: parts,
+				})
+			} else {
+				contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, parts...)
+			}
 		} else {
 			contents = append(contents, google.GeminiContent{
 				Role:  role,
@@ -472,7 +539,25 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 				ThinkingLevel:   "HIGH",
 			}
 		}
-	} else if strings.Contains(model, "thinking") || strings.Contains(model, "pro-high") || strings.Contains(model, "flash-high") {
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-high") || strings.Contains(rawModel, "pro-high") || strings.Contains(rawModel, "flash-high") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "HIGH",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-medium") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "MEDIUM",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-low") || strings.Contains(rawModel, "-minimal") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "LOW",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "thinking") || strings.Contains(model, "thinking") {
 		includeThoughts := true
 		genCfg.ThinkingConfig = &google.ThinkingConfig{
 			IncludeThoughts: &includeThoughts,
@@ -500,8 +585,21 @@ func ParseGeminiChunk(data []byte) (*google.GeminiResponse, error) {
 	return google.ParseGeminiResponse(trimmed)
 }
 
+// OpenAIChunkOptions provides streaming control flags for chunk formatting.
+type OpenAIChunkOptions struct {
+	IsFirstChunk        bool
+	HasEmittedToolCalls bool
+}
+
 // FormatOpenAIChunk converts a Gemini stream chunk into an SSE-formatted OpenAI delta chunk.
 func FormatOpenAIChunk(streamID, model string, cand *google.Candidate, usage *google.UsageMetadata) []byte {
+	bytes, _ := FormatOpenAIChunkWithOptions(streamID, model, cand, usage, OpenAIChunkOptions{IsFirstChunk: true})
+	return bytes
+}
+
+// FormatOpenAIChunkWithOptions converts a Gemini stream chunk with fine-grained streaming options.
+// It returns the formatted SSE chunk bytes and a boolean indicating whether any tool calls were emitted in this chunk.
+func FormatOpenAIChunkWithOptions(streamID, model string, cand *google.Candidate, usage *google.UsageMetadata, opts OpenAIChunkOptions) ([]byte, bool) {
 	chunk := OpenAIChatResponse{
 		ID:      streamID,
 		Object:  "chat.completion.chunk",
@@ -510,9 +608,12 @@ func FormatOpenAIChunk(streamID, model string, cand *google.Candidate, usage *go
 		Choices: []OpenAIChoice{},
 	}
 
+	emittedToolsInChunk := false
+
 	if cand != nil {
-		delta := OpenAIDelta{
-			Role: "assistant",
+		delta := OpenAIDelta{}
+		if opts.IsFirstChunk {
+			delta.Role = "assistant"
 		}
 
 		for _, part := range cand.Content.Parts {
@@ -543,6 +644,7 @@ func FormatOpenAIChunk(streamID, model string, cand *google.Candidate, usage *go
 							Arguments: leaked.Arguments,
 						},
 					})
+					emittedToolsInChunk = true
 				} else {
 					clean := cleanThinkingTags(part.Text)
 					if clean != "" {
@@ -567,12 +669,13 @@ func FormatOpenAIChunk(streamID, model string, cand *google.Candidate, usage *go
 						Arguments: string(argsBytes),
 					},
 				})
+				emittedToolsInChunk = true
 			}
 		}
 
 		var finishReason *string
 		if cand.FinishReason != "" {
-			fr := mapOpenAIFinishReason(cand.FinishReason, len(delta.ToolCalls) > 0)
+			fr := mapOpenAIFinishReason(cand.FinishReason, len(delta.ToolCalls) > 0 || opts.HasEmittedToolCalls || emittedToolsInChunk)
 			finishReason = &fr
 		}
 
@@ -601,10 +704,10 @@ func FormatOpenAIChunk(streamID, model string, cand *google.Candidate, usage *go
 
 	jsonBytes, err := json.Marshal(chunk)
 	if err != nil {
-		return nil
+		return nil, emittedToolsInChunk
 	}
 
-	return append(append([]byte("data: "), jsonBytes...), []byte("\n\n")...)
+	return append(append([]byte("data: "), jsonBytes...), []byte("\n\n")...), emittedToolsInChunk
 }
 
 // FormatOpenAIResponse translates a completed non-streaming GeminiResponse into OpenAIChatResponse.
@@ -803,4 +906,13 @@ func mapOpenAIFinishReason(geminiReason string, hasToolCalls bool) string {
 		}
 		return "stop"
 	}
+}
+
+func hasFunctionResponse(c google.GeminiContent) bool {
+	for _, p := range c.Parts {
+		if p.FunctionResponse != nil {
+			return true
+		}
+	}
+	return false
 }

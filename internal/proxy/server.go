@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -187,6 +188,24 @@ func (s *Server) recordRequest(entry RequestLogEntry) {
 		s.stats.RecentLogs = s.stats.RecentLogs[1:]
 	}
 	s.stats.RecentLogs = append(s.stats.RecentLogs, entry)
+
+	accStr := ""
+	if entry.AccountEmail != "" {
+		accStr = fmt.Sprintf(" [acc: %s]", entry.AccountEmail)
+	}
+	errStr := ""
+	if entry.Error != "" {
+		errStr = fmt.Sprintf(" - error: %s", entry.Error)
+	}
+	modelStr := ""
+	if entry.Model != "" {
+		if entry.TargetModel != "" && entry.TargetModel != entry.Model {
+			modelStr = fmt.Sprintf(" [%s -> %s]", entry.Model, entry.TargetModel)
+		} else {
+			modelStr = fmt.Sprintf(" [%s]", entry.Model)
+		}
+	}
+	log.Printf("[proxy] %s %s%s -> %d in %v%s%s", entry.Method, entry.Path, modelStr, entry.Status, entry.Duration.Round(time.Millisecond), accStr, errStr)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

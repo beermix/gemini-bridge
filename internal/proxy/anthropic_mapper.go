@@ -206,9 +206,13 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 						toolUseIDRemap[block.ID] = effectiveID
 						if block.Name != "" {
 							toolUseIDToName[block.ID] = block.Name
+							if p := strings.Split(block.ID, "|"); len(p) > 1 && p[0] != "" {
+								toolUseIDToName[p[0]] = block.Name
+							}
 						}
 					}
 					parts = append(parts, google.GeminiPart{
+						ThoughtSignature: SkipThoughtSignatureValidator,
 						FunctionCall: &google.FunctionCall{
 							ID:   effectiveID,
 							Name: block.Name,
@@ -219,16 +223,18 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 			}
 
 		default: // "user"
-			role = "user"
+			var toolParts []google.GeminiPart
+			var userParts []google.GeminiPart
+
 			for _, block := range parseAnthropicContentBlocks(msg.Content) {
 				switch block.Type {
 				case "text":
 					if block.Text != "" {
-						parts = append(parts, google.GeminiPart{Text: block.Text})
+						userParts = append(userParts, google.GeminiPart{Text: block.Text})
 					}
 				case "image":
 					if block.Source != nil && block.Source.Type == "base64" {
-						parts = append(parts, google.GeminiPart{
+						userParts = append(userParts, google.GeminiPart{
 							InlineData: &google.InlineData{
 								MimeType: block.Source.MediaType,
 								Data:     block.Source.Data,
@@ -238,7 +244,19 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 				case "tool_result":
 					name := toolUseIDToName[block.ToolUseID]
 					if name == "" {
-						name = block.ToolUseID
+						if p := strings.Split(block.ToolUseID, "|"); len(p) > 1 && p[0] != "" {
+							name = toolUseIDToName[p[0]]
+						}
+					}
+					if name == "" {
+						if len(req.Tools) > 0 && req.Tools[0].Name != "" {
+							name = req.Tools[0].Name
+						} else {
+							name = block.ToolUseID
+							if name == "" {
+								name = "tool"
+							}
+						}
 					}
 					effectiveID := block.ToolUseID
 					if remapped, ok := toolUseIDRemap[block.ToolUseID]; ok && remapped != "" {
@@ -246,12 +264,16 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 					}
 					var respMap map[string]interface{}
 					if str, ok := block.Content.(string); ok {
-						if err := json.Unmarshal([]byte(str), &respMap); err != nil {
+						if strings.Contains(str, `"$ref"`) || strings.Contains(str, `"$defs"`) {
+							respMap = map[string]interface{}{"output": str}
+						} else if err := json.Unmarshal([]byte(str), &respMap); err != nil {
 							respMap = map[string]interface{}{"result": str}
 						}
 					} else if block.Content != nil {
 						b, _ := json.Marshal(block.Content)
-						if err := json.Unmarshal(b, &respMap); err != nil {
+						if strings.Contains(string(b), `"$ref"`) || strings.Contains(string(b), `"$defs"`) {
+							respMap = map[string]interface{}{"output": string(b)}
+						} else if err := json.Unmarshal(b, &respMap); err != nil {
 							respMap = map[string]interface{}{"result": string(b)}
 						}
 					} else {
@@ -260,7 +282,7 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 					if block.IsError {
 						respMap["is_error"] = true
 					}
-					parts = append(parts, google.GeminiPart{
+					toolParts = append(toolParts, google.GeminiPart{
 						FunctionResponse: &google.FunctionResponse{
 							ID:       effectiveID,
 							Name:     name,
@@ -269,6 +291,55 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 					})
 				}
 			}
+
+			// First handle tool response parts (if any)
+			if len(toolParts) > 0 {
+				if len(contents) > 0 && contents[len(contents)-1].Role == "user" {
+					if hasFunctionResponse(contents[len(contents)-1]) {
+						contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, toolParts...)
+					} else {
+						// Previous user content was human text; interpose placeholder
+						contents = append(contents, google.GeminiContent{
+							Role:  "model",
+							Parts: []google.GeminiPart{{Text: InterruptedResponsePlaceholder}},
+						})
+						contents = append(contents, google.GeminiContent{
+							Role:  "user",
+							Parts: toolParts,
+						})
+					}
+				} else {
+					contents = append(contents, google.GeminiContent{
+						Role:  "user",
+						Parts: toolParts,
+					})
+				}
+			}
+
+			// Next handle regular user text/image parts (if any)
+			if len(userParts) > 0 {
+				if len(contents) > 0 && contents[len(contents)-1].Role == "user" {
+					if hasFunctionResponse(contents[len(contents)-1]) {
+						// Previous user content was tool result; interpose placeholder so human text isn't folded into tool results
+						contents = append(contents, google.GeminiContent{
+							Role:  "model",
+							Parts: []google.GeminiPart{{Text: InterruptedResponsePlaceholder}},
+						})
+						contents = append(contents, google.GeminiContent{
+							Role:  "user",
+							Parts: userParts,
+						})
+					} else {
+						contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, userParts...)
+					}
+				} else {
+					contents = append(contents, google.GeminiContent{
+						Role:  "user",
+						Parts: userParts,
+					})
+				}
+			}
+			continue
 		}
 
 		if len(parts) == 0 {
@@ -359,7 +430,25 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 				ThinkingLevel:   "HIGH",
 			}
 		}
-	} else if strings.Contains(model, "thinking") || strings.Contains(model, "pro-high") || strings.Contains(model, "flash-high") {
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-high") || strings.Contains(rawModel, "pro-high") || strings.Contains(rawModel, "flash-high") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "HIGH",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-medium") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "MEDIUM",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "-low") || strings.Contains(rawModel, "-minimal") {
+		includeThoughts := true
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingLevel:   "LOW",
+		}
+	} else if rawModel := strings.ToLower(req.Model); strings.Contains(rawModel, "thinking") || strings.Contains(model, "thinking") {
 		includeThoughts := true
 		genCfg.ThinkingConfig = &google.ThinkingConfig{
 			IncludeThoughts: &includeThoughts,

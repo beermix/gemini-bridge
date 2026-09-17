@@ -60,12 +60,16 @@ func TryParseLeakedToolCall(text string) (*LeakedToolCall, bool) {
 		trimmed = strings.TrimSpace(trimmed)
 	}
 
-	const prefix = "call:default_api:"
-	if !strings.HasPrefix(trimmed, prefix) {
+	var rest string
+	if strings.HasPrefix(trimmed, "call:default_api:") {
+		rest = strings.TrimPrefix(trimmed, "call:default_api:")
+	} else if strings.HasPrefix(trimmed, "default_api:") {
+		rest = strings.TrimPrefix(trimmed, "default_api:")
+	} else if strings.HasPrefix(trimmed, "call:") {
+		rest = strings.TrimPrefix(trimmed, "call:")
+	} else {
 		return nil, false
 	}
-
-	rest := strings.TrimPrefix(trimmed, prefix)
 	delimIdx := strings.IndexAny(rest, "({[")
 	var toolName, argPart string
 	if delimIdx == -1 {

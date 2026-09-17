@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	Version = "1.0.2"
+	Version = "1.0.3"
 
 	defaultProxyPort = "8045"
 	defaultAdminPort = "8046"
