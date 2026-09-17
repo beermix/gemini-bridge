@@ -198,7 +198,7 @@ func (m Model) handlePinToggle() (tea.Model, tea.Cmd) {
 			if err != nil {
 				return actionResultMsg{action: "Unpin", err: err}
 			}
-			return actionResultMsg{action: "Unpin", message: "Unpinned to Round-Robin"}
+			return actionResultMsg{action: "Unpin", message: "Unpinned to Sticky mode"}
 		}
 	}
 
@@ -224,7 +224,7 @@ func (m Model) handleUnpin() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return actionResultMsg{action: "Unpin", err: err}
 		}
-		return actionResultMsg{action: "Unpin", message: "Unpinned to Round-Robin"}
+		return actionResultMsg{action: "Unpin", message: "Unpinned to Sticky mode"}
 	}
 }
 

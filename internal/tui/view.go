@@ -56,7 +56,7 @@ func renderHeader(status *admin.StatusResponse, width int) string {
 	title := titleStyle.Render(" Gemini Bridge ")
 
 	uptimeText := "Uptime: -"
-	modeBadge := modeRoundRobinBadge.Render("🔄 Round-Robin")
+	modeBadge := modeStickyBadge.Render("📌 Sticky")
 	statsLine := statsLabelStyle.Render("Requests: -")
 
 	if status != nil {
@@ -76,7 +76,7 @@ func renderHeader(status *admin.StatusResponse, width int) string {
 			}
 			modeBadge = modePinnedBadge.Render(fmt.Sprintf("📌 Pinned: %s", pinnedEmail))
 		} else {
-			modeBadge = modeRoundRobinBadge.Render("🔄 Round-Robin")
+			modeBadge = modeStickyBadge.Render("📌 Sticky")
 		}
 
 		statsLine = fmt.Sprintf("Requests: %s Total | %s OK | %s 429s | %s Errors",

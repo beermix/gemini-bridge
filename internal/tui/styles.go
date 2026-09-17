@@ -45,11 +45,13 @@ var (
 			Foreground(colorDanger)
 
 	// Mode Badges
-	modeRoundRobinBadge = lipgloss.NewStyle().
+	modeStickyBadge = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(colorHighlight).
 				Background(lipgloss.Color("#0A2540")).
 				Padding(0, 1)
+
+	modeRoundRobinBadge = modeStickyBadge
 
 	modePinnedBadge = lipgloss.NewStyle().
 			Bold(true).

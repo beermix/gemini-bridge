@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Pool manages a pool of CloudAccounts, providing Round-Robin distribution,
+// Pool manages a pool of CloudAccounts, providing sticky-until-error account selection,
 // pinning, automatic 429 cooldowns, token auto-refresh, and project ID discovery.
 type Pool struct {
 	mu              sync.RWMutex
@@ -93,7 +93,7 @@ func (p *Pool) PinAccount(accountID string) error {
 	return nil
 }
 
-// Unpin clears the pinned account, returning the pool to Round-Robin selection,
+// Unpin clears the pinned account, returning the pool to sticky pool selection,
 // and persists the unpinned state to configuration.
 func (p *Pool) Unpin() error {
 	p.mu.Lock()
@@ -118,7 +118,7 @@ func (p *Pool) IsPinned() (bool, string) {
 	return p.pinnedAccountID != "", p.pinnedAccountID
 }
 
-// GetActiveAccount returns a copy of the currently active account (pinned account if set, or next round-robin candidate).
+// GetActiveAccount returns a copy of the currently active account (pinned account if set, or active sticky account).
 func (p *Pool) GetActiveAccount() *CloudAccount {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -293,7 +293,7 @@ func (p *Pool) RefreshToken(accountID string) error {
 	return nil
 }
 
-// LeaseAccount selects an account based on round-robin or pinning, skipping accounts on cooldown.
+// LeaseAccount selects an account based on sticky selection or pinning, skipping accounts on cooldown.
 // It automatically refreshes expired tokens and discovers missing project IDs before returning.
 // Concurrency optimized: candidate selection is done under p.mu, while network refresh and disk I/O
 // are performed outside p.mu using p.refreshMu to avoid blocking other concurrent requests.
@@ -414,7 +414,7 @@ func (p *Pool) selectCandidate() (*CloudAccount, bool, error) {
 			return nil, false, fmt.Errorf("pinned account %q is inactive", p.pinnedAccountID)
 		}
 	} else {
-		// Case 2: Round-Robin Mode
+		// Case 2: Sticky Account Selection (advances only on cooldown or inactive)
 		total := len(p.accounts)
 		startIndex := p.index % total
 		for i := 0; i < total; i++ {
@@ -427,7 +427,7 @@ func (p *Pool) selectCandidate() (*CloudAccount, bool, error) {
 				continue
 			}
 			candidate = acc
-			p.index = (idx + 1) % total
+			p.index = idx
 			break
 		}
 

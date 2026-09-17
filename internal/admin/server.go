@@ -135,7 +135,7 @@ func (s *AdminServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mode := "round-robin"
+	mode := "sticky"
 	pinnedAccountID := ""
 	var accounts []*account.CloudAccount
 

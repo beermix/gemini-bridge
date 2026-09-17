@@ -403,8 +403,8 @@ func TestModel_View_Rendering(t *testing.T) {
 	if !strings.Contains(view, "1h23m45s") {
 		t.Error("view missing uptime")
 	}
-	if !strings.Contains(view, "Round-Robin") {
-		t.Error("view missing round-robin mode badge")
+	if !strings.Contains(view, "Sticky") {
+		t.Error("view missing sticky mode badge")
 	}
 	if !strings.Contains(view, "150") || !strings.Contains(view, "140") {
 		t.Error("view missing request statistics (150 Total, 140 OK)")

@@ -165,7 +165,7 @@ func runServe(args []string) {
 	if isPinned, pid := pool.IsPinned(); isPinned {
 		log.Printf("Active Mode      : PINNED (Account: %s)", pid)
 	} else {
-		log.Printf("Active Mode      : ROUND-ROBIN")
+		log.Printf("Active Mode      : STICKY (Auto-Failover)")
 	}
 
 	// Initialize Google upstream client with 120s timeout

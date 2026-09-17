@@ -110,7 +110,7 @@ func TestPool_NewPool_Error(t *testing.T) {
 	}
 }
 
-func TestPool_RoundRobin_Leasing(t *testing.T) {
+func TestPool_Sticky_Leasing(t *testing.T) {
 	accs := []*CloudAccount{
 		makeTestAccount("acc-1", "a1@test.com", 3600, "proj-1"),
 		makeTestAccount("acc-2", "a2@test.com", 3600, "proj-2"),
@@ -132,31 +132,22 @@ func TestPool_RoundRobin_Leasing(t *testing.T) {
 		t.Errorf("expected acc-1, got %s", a1.ID)
 	}
 
-	// 2nd lease -> acc-2
+	// 2nd lease -> still acc-1 (sticky)
 	a2, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
 	}
-	if a2.ID != "acc-2" {
-		t.Errorf("expected acc-2, got %s", a2.ID)
+	if a2.ID != "acc-1" {
+		t.Errorf("expected acc-1 (sticky), got %s", a2.ID)
 	}
 
-	// 3rd lease -> acc-3
+	// 3rd lease -> still acc-1 (sticky)
 	a3, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
 	}
-	if a3.ID != "acc-3" {
-		t.Errorf("expected acc-3, got %s", a3.ID)
-	}
-
-	// 4th lease -> wraps around to acc-1
-	a4, err := pool.LeaseAccount("gemini-2.5-pro")
-	if err != nil {
-		t.Fatalf("unexpected lease error: %v", err)
-	}
-	if a4.ID != "acc-1" {
-		t.Errorf("expected acc-1, got %s", a4.ID)
+	if a3.ID != "acc-1" {
+		t.Errorf("expected acc-1 (sticky), got %s", a3.ID)
 	}
 }
 
@@ -245,7 +236,7 @@ func TestPool_Cooldown_And_Failover(t *testing.T) {
 	// Put acc-1 on cooldown
 	pool.MarkCooldown("acc-1", 1*time.Minute)
 
-	// In Round-Robin, acc-1 should be skipped
+	// Since acc-1 is on cooldown, failover moves to acc-2
 	a, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
@@ -254,26 +245,47 @@ func TestPool_Cooldown_And_Failover(t *testing.T) {
 		t.Errorf("expected acc-2 (acc-1 skipped), got %s", a.ID)
 	}
 
+	// Subsequent lease STAYS on acc-2 (new sticky account!)
 	b, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
 	}
-	if b.ID != "acc-3" {
-		t.Errorf("expected acc-3, got %s", b.ID)
+	if b.ID != "acc-2" {
+		t.Errorf("expected acc-2 (sticky), got %s", b.ID)
 	}
 
-	// Next lease wraps around, acc-1 still on cooldown -> returns acc-2
+	// When acc-1 cooldown expires, pool STILL stays on acc-2 (preserves KV cache locality!)
+	pool.MarkCooldown("acc-1", 0)
 	c, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
 	}
 	if c.ID != "acc-2" {
-		t.Errorf("expected acc-2, got %s", c.ID)
+		t.Errorf("expected acc-2 (preserves sticky account), got %s", c.ID)
+	}
+
+	// Put acc-2 on cooldown -> advances and sticks to acc-3
+	pool.MarkCooldown("acc-2", 1*time.Minute)
+	d, err := pool.LeaseAccount("gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("unexpected lease error: %v", err)
+	}
+	if d.ID != "acc-3" {
+		t.Errorf("expected acc-3, got %s", d.ID)
+	}
+
+	// Put acc-3 on cooldown -> advances back to acc-1 (which is active) and sticks to acc-1
+	pool.MarkCooldown("acc-3", 1*time.Minute)
+	e, err := pool.LeaseAccount("gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("unexpected lease error: %v", err)
+	}
+	if e.ID != "acc-1" {
+		t.Errorf("expected acc-1, got %s", e.ID)
 	}
 
 	// Put all accounts on cooldown
-	pool.MarkCooldown("acc-2", 1*time.Minute)
-	pool.MarkCooldown("acc-3", 1*time.Minute)
+	pool.MarkCooldown("acc-1", 1*time.Minute)
 
 	// All accounts in cooldown -> returns error
 	_, err = pool.LeaseAccount("gemini-2.5-pro")
@@ -287,12 +299,12 @@ func TestPool_Cooldown_And_Failover(t *testing.T) {
 
 	// Clear cooldown for acc-1
 	pool.MarkCooldown("acc-1", 0)
-	d, err := pool.LeaseAccount("gemini-2.5-pro")
+	finalAcc, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected error after clearing cooldown: %v", err)
 	}
-	if d.ID != "acc-1" {
-		t.Errorf("expected acc-1 after clearing cooldown, got %s", d.ID)
+	if finalAcc.ID != "acc-1" {
+		t.Errorf("expected acc-1 after clearing cooldown, got %s", finalAcc.ID)
 	}
 }
 
@@ -342,7 +354,8 @@ func TestPool_TokenExpiry_AutoRefresh(t *testing.T) {
 		t.Errorf("expected SaveAccountsCache to be called, got %d calls", loader.saveCalls)
 	}
 
-	// Lease acc-2 -> valid token (> 300s), should NOT trigger refresh
+	// Mark acc-1 on cooldown to lease acc-2 -> valid token (> 300s), should NOT trigger refresh
+	pool.MarkCooldown("acc-1", 1*time.Minute)
 	acc2, err := pool.LeaseAccount("gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected lease error: %v", err)
@@ -619,7 +632,7 @@ func TestPool_RealFileLoader_Integration(t *testing.T) {
 		t.Fatalf("expected 2 accounts from FileLoader, got %d", len(accs))
 	}
 
-	// Lease both accounts in round robin
+	// Lease both accounts in sticky mode
 	l1, err := pool.LeaseAccount("")
 	if err != nil {
 		t.Fatalf("lease 1 failed: %v", err)
@@ -628,8 +641,8 @@ func TestPool_RealFileLoader_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lease 2 failed: %v", err)
 	}
-	if l1.ID == l2.ID {
-		t.Errorf("expected different accounts leased, got %s and %s", l1.ID, l2.ID)
+	if l1.ID != l2.ID {
+		t.Errorf("expected same sticky account leased, got %s and %s", l1.ID, l2.ID)
 	}
 
 	// Mark cooldown and verify

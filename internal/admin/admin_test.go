@@ -130,8 +130,8 @@ func TestAdmin_GetStatus(t *testing.T) {
 		t.Fatalf("GetStatus() error = %v", err)
 	}
 
-	if status.Mode != "round-robin" {
-		t.Errorf("expected Mode 'round-robin', got %q", status.Mode)
+	if status.Mode != "sticky" {
+		t.Errorf("expected Mode 'sticky', got %q", status.Mode)
 	}
 	if status.PinnedAccountID != "" {
 		t.Errorf("expected empty PinnedAccountID, got %q", status.PinnedAccountID)
@@ -202,8 +202,8 @@ func TestAdmin_PinAndUnpin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStatus() error = %v", err)
 	}
-	if status.Mode != "round-robin" {
-		t.Errorf("expected Mode 'round-robin', got %q", status.Mode)
+	if status.Mode != "sticky" {
+		t.Errorf("expected Mode 'sticky', got %q", status.Mode)
 	}
 	if status.PinnedAccountID != "" {
 		t.Errorf("expected empty PinnedAccountID, got %q", status.PinnedAccountID)
