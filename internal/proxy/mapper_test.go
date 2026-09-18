@@ -46,6 +46,8 @@ func TestMapper_ResolveModel(t *testing.T) {
 		{"gemini-3.1-pro-preview", "gemini-3.1-pro-low"},
 
 		// Gemini Flash variants
+		{"gemini-flash-latest", "gemini-3-flash"},
+		{"gemini-flash-lite-latest", "gemini-3-flash"},
 		{"gemini-2.5-flash", "gemini-3-flash"},
 		{"gemini-3-flash", "gemini-3-flash"},
 		{"gemini-3.8-flash", "gemini-3-flash"},

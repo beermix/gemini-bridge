@@ -562,32 +562,34 @@ func TestHermes_ModelMetadataProbe(t *testing.T) {
 
 	client := proxyHTTP.Client()
 
-	// Single model probe
-	req, _ := http.NewRequest(http.MethodGet, proxyHTTP.URL+"/v1/models/gemini-3-flash", nil)
-	req.Header.Set("Authorization", "Bearer test-key")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("model probe failed: %v", err)
-	}
-	defer resp.Body.Close()
+	// Single model probes
+	for _, mid := range []string{"gemini-3-flash", "gemini-flash-latest", "gemini-flash-lite-latest"} {
+		req, _ := http.NewRequest(http.MethodGet, proxyHTTP.URL+"/v1/models/"+mid, nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("model probe for %s failed: %v", mid, err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d", mid, resp.StatusCode)
+		}
 
-	var modelData map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&modelData); err != nil {
-		t.Fatalf("failed to decode model info: %v", err)
-	}
+		var modelData map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&modelData); err != nil {
+			t.Fatalf("failed to decode model info for %s: %v", mid, err)
+		}
+		resp.Body.Close()
 
-	if cl, ok := modelData["context_length"].(float64); !ok || int(cl) != 1048576 {
-		t.Errorf("expected context_length 1048576, got %v", modelData["context_length"])
-	}
-	if mt, ok := modelData["max_tokens"].(float64); !ok || int(mt) != 65536 {
-		t.Errorf("expected max_tokens 65536, got %v", modelData["max_tokens"])
-	}
-	if mcl, ok := modelData["max_context_length"].(float64); !ok || int(mcl) != 1048576 {
-		t.Errorf("expected max_context_length 1048576, got %v", modelData["max_context_length"])
+		if cl, ok := modelData["context_length"].(float64); !ok || int(cl) != 1048576 {
+			t.Errorf("[%s] expected context_length 1048576, got %v", mid, modelData["context_length"])
+		}
+		if mt, ok := modelData["max_tokens"].(float64); !ok || int(mt) != 65536 {
+			t.Errorf("[%s] expected max_tokens 65536, got %v", mid, modelData["max_tokens"])
+		}
+		if mcl, ok := modelData["max_context_length"].(float64); !ok || int(mcl) != 1048576 {
+			t.Errorf("[%s] expected max_context_length 1048576, got %v", mid, modelData["max_context_length"])
+		}
 	}
 }
 

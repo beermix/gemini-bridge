@@ -696,29 +696,27 @@ func TestModels_And_Health_Endpoints(t *testing.T) {
 		if listResp.Object != "list" {
 			t.Errorf("expected object 'list', got %q", listResp.Object)
 		}
-		if len(listResp.Data) == 0 {
-			t.Errorf("expected models in list, got 0")
+		if len(listResp.Data) != 2 {
+			t.Errorf("expected 2 models in list, got %d", len(listResp.Data))
 		}
-		var foundGemini, foundClaude, foundGPT bool
+		expectedModels := map[string]bool{
+			"gemini-flash-latest":      false,
+			"gemini-flash-lite-latest": false,
+		}
 		for _, m := range listResp.Data {
-			if strings.Contains(m.ID, "gemini") {
-				foundGemini = true
+			if _, ok := expectedModels[m.ID]; ok {
+				expectedModels[m.ID] = true
+			} else {
+				t.Errorf("unexpected model in catalog: %q", m.ID)
 			}
-			if strings.Contains(m.ID, "claude") {
-				foundClaude = true
-			}
-			if strings.Contains(m.ID, "gpt") {
-				foundGPT = true
-			}
-			if m.ID == "gpt-4o" || m.ID == "gpt-4" || m.ID == "gpt-3.5-turbo" {
-				t.Errorf("unexpected proprietary OpenAI model %q in catalog", m.ID)
-			}
-			if m.ID == "gpt-oss-120b-medium" && m.OwnedBy != "google" {
-				t.Errorf("expected gpt-oss-120b-medium owned_by to be 'google', got %q", m.OwnedBy)
+			if m.OwnedBy != "google" {
+				t.Errorf("expected owned_by to be 'google', got %q", m.OwnedBy)
 			}
 		}
-		if !foundGemini || !foundClaude || !foundGPT {
-			t.Errorf("expected gemini, claude, and gpt models in catalog: foundGemini=%v, foundClaude=%v, foundGPT=%v", foundGemini, foundClaude, foundGPT)
+		for id, found := range expectedModels {
+			if !found {
+				t.Errorf("expected model %q in catalog", id)
+			}
 		}
 	}
 

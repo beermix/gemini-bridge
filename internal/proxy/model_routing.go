@@ -18,6 +18,11 @@ func ResolveModel(requestedModel string) string {
 		return "gemini-3-flash"
 	}
 
+	// Canonical rolling aliases for Hermes Agent
+	if lower == "gemini-flash-latest" || lower == "gemini-flash-lite-latest" {
+		return "gemini-3-flash"
+	}
+
 	// GPT-OSS variants
 	if strings.HasPrefix(lower, "gpt-oss") {
 		return "claude-opus-4-6-thinking"
