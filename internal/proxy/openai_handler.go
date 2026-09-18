@@ -190,11 +190,11 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 
 		if !req.Stream {
 			// Non-streaming completion
-			resp, genErr := s.client.GenerateContent(r.Context(), acc, geminiReq)
+			resp, ep, genErr := s.client.GenerateContentWithEndpoint(r.Context(), acc, geminiReq)
 			if genErr != nil && IsInvalidThoughtSignatureError(genErr) {
 				ClearThoughtSignatures()
 				StripThoughtSignatures(geminiReq)
-				resp, genErr = s.client.GenerateContent(r.Context(), acc, geminiReq)
+				resp, ep, genErr = s.client.GenerateContentWithEndpoint(r.Context(), acc, geminiReq)
 			}
 			if genErr != nil {
 				var upErr *google.UpstreamError
@@ -214,7 +214,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				if errors.As(genErr, &upErr) && upErr.StatusCode > 0 {
 					status = upErr.StatusCode
 				}
-				s.respondOpenAIError(w, r, startTime, req.Model, targetModel, status, genErr.Error(), acc.Email)
+				s.respondOpenAIError(w, r, startTime, req.Model, targetModel, status, genErr.Error(), acc.Email, ep)
 				return
 			}
 
@@ -231,6 +231,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				Status:       http.StatusOK,
 				Duration:     time.Since(startTime),
 				AccountEmail: acc.Email,
+				Endpoint:     ep,
 			})
 
 			w.Header().Set("Content-Type", "application/json")
@@ -240,11 +241,11 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		}
 
 		// Streaming completion
-		stream, streamErr := s.client.StreamGenerateContent(r.Context(), acc, geminiReq)
+		stream, ep, streamErr := s.client.StreamGenerateContentWithEndpoint(r.Context(), acc, geminiReq)
 		if streamErr != nil && IsInvalidThoughtSignatureError(streamErr) {
 			ClearThoughtSignatures()
 			StripThoughtSignatures(geminiReq)
-			stream, streamErr = s.client.StreamGenerateContent(r.Context(), acc, geminiReq)
+			stream, ep, streamErr = s.client.StreamGenerateContentWithEndpoint(r.Context(), acc, geminiReq)
 		}
 		if streamErr != nil {
 			var upErr *google.UpstreamError
@@ -264,7 +265,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			if errors.As(streamErr, &upErr) && upErr.StatusCode > 0 {
 				status = upErr.StatusCode
 			}
-			s.respondOpenAIError(w, r, startTime, req.Model, targetModel, status, streamErr.Error(), acc.Email)
+			s.respondOpenAIError(w, r, startTime, req.Model, targetModel, status, streamErr.Error(), acc.Email, ep)
 			return
 		}
 
@@ -281,7 +282,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				s.pool.MarkCooldown(cooldownID, 30*time.Second)
 				continue
 			}
-			s.respondOpenAIError(w, r, startTime, req.Model, targetModel, http.StatusBadGateway, "failed to receive initial stream event: "+firstErr.Error(), acc.Email)
+			s.respondOpenAIError(w, r, startTime, req.Model, targetModel, http.StatusBadGateway, "failed to receive initial stream event: "+firstErr.Error(), acc.Email, ep)
 			return
 		}
 
@@ -377,12 +378,17 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			Status:       http.StatusOK,
 			Duration:     time.Since(startTime),
 			AccountEmail: acc.Email,
+			Endpoint:     ep,
 		})
 		return
 	}
 }
 
-func (s *Server) respondOpenAIError(w http.ResponseWriter, r *http.Request, startTime time.Time, model, targetModel string, status int, msg, email string) {
+func (s *Server) respondOpenAIError(w http.ResponseWriter, r *http.Request, startTime time.Time, model, targetModel string, status int, msg, email string, endpoint ...string) {
+	ep := ""
+	if len(endpoint) > 0 {
+		ep = endpoint[0]
+	}
 	s.recordRequest(RequestLogEntry{
 		Timestamp:    startTime,
 		Method:       r.Method,
@@ -392,6 +398,7 @@ func (s *Server) respondOpenAIError(w http.ResponseWriter, r *http.Request, star
 		Status:       status,
 		Duration:     time.Since(startTime),
 		AccountEmail: email,
+		Endpoint:     ep,
 		Error:        msg,
 	})
 

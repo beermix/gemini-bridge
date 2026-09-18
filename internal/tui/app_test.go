@@ -758,4 +758,97 @@ func TestRenderActivityPanel_ModelRoutingArrowSpaces(t *testing.T) {
 	}
 }
 
+func TestRenderHeader_EndpointBadge(t *testing.T) {
+	statusProd := &admin.StatusResponse{
+		Mode:           "sticky",
+		Uptime:         "1h",
+		ActiveEndpoint: "cloudcode-pa",
+	}
+	outProd := renderHeader(statusProd, 120)
+	if !strings.Contains(outProd, "Upstream: cloudcode-pa") {
+		t.Errorf("expected prod endpoint badge, got: %s", outProd)
+	}
+
+	statusFallback := &admin.StatusResponse{
+		Mode:           "sticky",
+		Uptime:         "1h",
+		ActiveEndpoint: "daily-cloudcode-pa",
+	}
+	outFallback := renderHeader(statusFallback, 120)
+	if !strings.Contains(outFallback, "daily-cloudcode-pa") || !strings.Contains(outFallback, "[FALLBACK]") {
+		t.Errorf("expected fallback badge, got: %s", outFallback)
+	}
+}
+
+func TestRenderErrorsPanel(t *testing.T) {
+	stats := proxy.ServerStats{
+		ErrorRequests: 1,
+		RecentErrors: []proxy.RequestLogEntry{
+			{
+				Timestamp:    time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC),
+				Method:       "POST",
+				Path:         "/v1/chat/completions",
+				Model:        "gpt-4o",
+				Status:       500,
+				Endpoint:     "daily-cloudcode-pa",
+				AccountEmail: "user@example.com",
+				Error:        "upstream error (status 429): Resource has been exhausted",
+			},
+		},
+	}
+
+	out := renderErrorsPanel(stats, 120)
+	if !strings.Contains(out, "Recent Errors") {
+		t.Errorf("expected header 'Recent Errors', got: %s", out)
+	}
+	if !strings.Contains(out, "500") {
+		t.Errorf("expected status 500, got: %s", out)
+	}
+	if !strings.Contains(out, "Resource has been exhausted") {
+		t.Errorf("expected error message, got: %s", out)
+	}
+	if !strings.Contains(out, "daily-cloudcode-pa") {
+		t.Errorf("expected endpoint in error panel, got: %s", out)
+	}
+}
+
+func TestRenderActivityPanel_EndpointAndErrorSubline(t *testing.T) {
+	stats := proxy.ServerStats{
+		RecentLogs: []proxy.RequestLogEntry{
+			{
+				Timestamp:    time.Date(2026, 9, 18, 10, 5, 0, 0, time.UTC),
+				Method:       "POST",
+				Path:         "/v1/chat/completions",
+				Model:        "gpt-4o",
+				Status:       200,
+				Duration:     150 * time.Millisecond,
+				Endpoint:     "cloudcode-pa",
+				AccountEmail: "active@example.com",
+			},
+			{
+				Timestamp:    time.Date(2026, 9, 18, 10, 6, 0, 0, time.UTC),
+				Method:       "POST",
+				Path:         "/v1/messages",
+				Model:        "claude-3-7-sonnet",
+				Status:       500,
+				Duration:     80 * time.Millisecond,
+				Endpoint:     "daily-cloudcode-pa",
+				AccountEmail: "fail@example.com",
+				Error:        "upstream error 429: rate limit exceeded",
+			},
+		},
+	}
+
+	out := renderActivityPanel(stats, 125)
+	if !strings.Contains(out, "prod") {
+		t.Errorf("expected 'prod' endpoint in table, got: %s", out)
+	}
+	if !strings.Contains(out, "daily") {
+		t.Errorf("expected 'daily' endpoint in table, got: %s", out)
+	}
+	if !strings.Contains(out, "↳ error: upstream error 429: rate limit exceeded") {
+		t.Errorf("expected error subline in activity panel, got: %s", out)
+	}
+}
+
 

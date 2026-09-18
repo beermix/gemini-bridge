@@ -59,6 +59,34 @@ var (
 			Background(lipgloss.Color("#3A2E00")).
 			Padding(0, 1)
 
+	// Endpoint Badges
+	endpointProdBadge = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorSecondary).
+				Background(lipgloss.Color("#0A2E20")).
+				Padding(0, 1)
+
+	endpointFallbackBadge = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorWarning).
+				Background(lipgloss.Color("#3A2A00")).
+				Padding(0, 1)
+
+	epProdStyle = lipgloss.NewStyle().
+				Foreground(colorSecondary)
+
+	epDailyStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorWarning)
+
+	errorDetailStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FF8080"))
+
+	errorBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorDanger).
+				Padding(0, 1)
+
 	// Status Badges
 	statusActiveBadge = lipgloss.NewStyle().
 				Bold(true).

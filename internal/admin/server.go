@@ -25,6 +25,7 @@ type StatusResponse struct {
 	Accounts        []*account.CloudAccount `json:"accounts"`
 	Stats           proxy.ServerStats       `json:"stats"`
 	Uptime          string                  `json:"uptime"`
+	ActiveEndpoint  string                  `json:"active_endpoint,omitempty"`
 }
 
 // SelectRequest is the payload for POST /api/select.
@@ -153,12 +154,18 @@ func (s *AdminServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		stats = s.statsProvider.GetStats()
 	}
 
+	activeEP := stats.ActiveEndpoint
+	if activeEP == "" {
+		activeEP = "cloudcode-pa"
+	}
+
 	resp := StatusResponse{
 		Mode:            mode,
 		PinnedAccountID: pinnedAccountID,
 		Accounts:        accounts,
 		Stats:           stats,
 		Uptime:          time.Since(s.startTime).Truncate(time.Second).String(),
+		ActiveEndpoint:  activeEP,
 	}
 
 	writeJSON(w, http.StatusOK, resp)

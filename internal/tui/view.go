@@ -40,11 +40,17 @@ func renderView(m Model) string {
 	b.WriteString(renderAccountsTable(m.status, m.cursor, m.width))
 	b.WriteString("\n\n")
 
-	// 3. Recent Activity Panel
+	// 3. Errors Panel (if any error requests or recent errors recorded)
+	if m.status != nil && (m.status.Stats.ErrorRequests > 0 || len(m.status.Stats.RecentErrors) > 0) {
+		b.WriteString(renderErrorsPanel(m.status.Stats, m.width))
+		b.WriteString("\n\n")
+	}
+
+	// 4. Recent Activity Panel
 	b.WriteString(renderActivityPanel(m.status.Stats, m.width))
 	b.WriteString("\n\n")
 
-	// 4. Footer
+	// 5. Footer
 	b.WriteString(renderFooter(m.actionMsg, m.actionMsgErr))
 
 	return b.String()
@@ -57,6 +63,7 @@ func renderHeader(status *admin.StatusResponse, width int) string {
 
 	uptimeText := "Uptime: -"
 	modeBadge := modeStickyBadge.Render("📌 Sticky")
+	endpointBadge := endpointProdBadge.Render("🌐 Upstream: cloudcode-pa")
 	statsLine := statsLabelStyle.Render("Requests: -")
 
 	if status != nil {
@@ -65,6 +72,20 @@ func renderHeader(status *admin.StatusResponse, width int) string {
 			uptime = "0s"
 		}
 		uptimeText = fmt.Sprintf("Uptime: %s", uptime)
+
+		activeEP := status.ActiveEndpoint
+		if activeEP == "" {
+			activeEP = status.Stats.ActiveEndpoint
+		}
+		if activeEP == "" {
+			activeEP = "cloudcode-pa"
+		}
+
+		if strings.Contains(activeEP, "daily") || strings.Contains(activeEP, "fallback") {
+			endpointBadge = endpointFallbackBadge.Render(fmt.Sprintf("⚠️ Upstream: %s [FALLBACK]", activeEP))
+		} else {
+			endpointBadge = endpointProdBadge.Render(fmt.Sprintf("🌐 Upstream: %s", activeEP))
+		}
 
 		if status.Mode == "pinned" {
 			pinnedEmail := status.PinnedAccountID
@@ -87,7 +108,7 @@ func renderHeader(status *admin.StatusResponse, width int) string {
 		)
 	}
 
-	topLine := fmt.Sprintf("%s   %s   %s", title, modeBadge, headerSubStyle.Render(uptimeText))
+	topLine := fmt.Sprintf("%s   %s   %s   %s", title, modeBadge, endpointBadge, headerSubStyle.Render(uptimeText))
 	b.WriteString(topLine)
 	b.WriteString("\n")
 	b.WriteString(statsLine)
@@ -178,6 +199,82 @@ func formatExpiry(acc *account.CloudAccount) string {
 	return fmt.Sprintf("in %dh%02dm", int(remain.Hours()), int(remain.Minutes())%60)
 }
 
+func renderErrorsPanel(stats proxy.ServerStats, width int) string {
+	var b strings.Builder
+
+	title := statsErrStyle.Render("⚠️  Recent Errors")
+	countStr := headerSubStyle.Render(fmt.Sprintf(" (%d error requests)", stats.ErrorRequests))
+	b.WriteString(fmt.Sprintf("%s%s\n", title, countStr))
+
+	errors := stats.RecentErrors
+	if len(errors) == 0 {
+		b.WriteString(headerSubStyle.Render("  No detailed error logs recorded yet.\n"))
+		return b.String()
+	}
+
+	const maxDisplayErrors = 5
+	start := 0
+	if len(errors) > maxDisplayErrors {
+		start = len(errors) - maxDisplayErrors
+	}
+	recent := errors[start:]
+
+	effectiveWidth := width
+	if effectiveWidth < 100 {
+		effectiveWidth = 125
+	}
+
+	for i := len(recent) - 1; i >= 0; i-- {
+		entry := recent[i]
+		ts := entry.Timestamp.Format("15:04:05")
+		statusStyle := statsErrStyle
+		if entry.Status == 429 {
+			statusStyle = statsWarnStyle
+		}
+		statusStr := statusStyle.Render(fmt.Sprintf("%3d", entry.Status))
+
+		modelName := entry.Model
+		if entry.TargetModel != "" && entry.TargetModel != entry.Model {
+			modelName = fmt.Sprintf("%s → %s", entry.Model, entry.TargetModel)
+		}
+		if modelName == "" {
+			modelName = "-"
+		}
+
+		ep := entry.Endpoint
+		if ep == "" {
+			ep = "cloudcode-pa"
+		}
+		epStr := epProdStyle.Render(ep)
+		if strings.Contains(ep, "daily") {
+			epStr = epDailyStyle.Render(ep)
+		}
+
+		acc := shortAccount(entry.AccountEmail)
+		if acc == "" {
+			acc = "-"
+		}
+
+		headerLine := fmt.Sprintf("  [%s] %s │ %-4s │ %s │ acc: %s │ ep: %s │ %s",
+			ts, statusStr, entry.Method, modelStyle.Render(truncateString(modelName, 25)), acc, epStr, entry.Path)
+		b.WriteString(headerLine)
+		b.WriteString("\n")
+
+		errMsg := entry.Error
+		if errMsg == "" {
+			errMsg = "HTTP error response without detailed message"
+		}
+		maxErrLen := effectiveWidth - 10
+		if maxErrLen < 50 {
+			maxErrLen = 80
+		}
+		b.WriteString(errorDetailStyle.Render(fmt.Sprintf("    ↳ %s", truncateString(errMsg, maxErrLen))))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 func renderActivityPanel(stats proxy.ServerStats, width int) string {
 	var b strings.Builder
 
@@ -203,16 +300,16 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 	}
 
 	// Dynamic column layout:
-	// TIME (8) + METHOD (4) + STATUS (3) + DURATION (6) + PATH (24) + ACCOUNT (12)
-	// 6 vertical separators " │ " = 18 chars + 2 leading indent = 77 fixed chars.
+	// TIME (8) + METHOD (4) + STATUS (3) + DURATION (6) + EP (5) + PATH (22) + ACCOUNT (12)
+	// 7 vertical separators " │ " = 21 chars + 2 leading indent = 81 fixed chars.
 	// Remaining width goes to MODEL column.
 	accountWidth := 12
-	pathWidth := 24
-	fixedWidth := 77
+	pathWidth := 22
+	fixedWidth := 81
 
 	modelWidth := effectiveWidth - fixedWidth
-	if modelWidth < 30 {
-		modelWidth = 30
+	if modelWidth < 25 {
+		modelWidth = 25
 	}
 
 	sep := gridSepStyle.Render("│")
@@ -231,6 +328,13 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 
 		durStr := fmt.Sprintf("%-6s", formatDuration(entry.Duration))
 
+		epStr := epProdStyle.Render("prod ")
+		if strings.Contains(entry.Endpoint, "daily") {
+			epStr = epDailyStyle.Render("daily")
+		} else if entry.Endpoint == "" {
+			epStr = headerSubStyle.Render("  -  ")
+		}
+
 		displayModel := entry.Model
 		if entry.TargetModel != "" && entry.TargetModel != entry.Model {
 			displayModel = fmt.Sprintf("%s → %s", entry.Model, entry.TargetModel)
@@ -240,8 +344,8 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 		pathStr := fmt.Sprintf("%-*s", pathWidth, truncateString(entry.Path, pathWidth))
 		accountStr := fmt.Sprintf("%-*s", accountWidth, truncateString(shortAccount(entry.AccountEmail), accountWidth))
 
-		line := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s %s %s %s %s",
-			ts, sep, method, sep, statusStr, sep, durStr, sep, modelStr, sep, pathStr, sep, accountStr)
+		line := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+			ts, sep, method, sep, statusStr, sep, durStr, sep, epStr, sep, modelStr, sep, pathStr, sep, accountStr)
 
 		if i%2 == 1 {
 			line = gridRowOddStyle.Render(line)
@@ -249,6 +353,14 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 
 		b.WriteString(line)
 		b.WriteString("\n")
+
+		if entry.Error != "" {
+			maxErrLen := effectiveWidth - 12
+			if maxErrLen < 50 {
+				maxErrLen = 80
+			}
+			b.WriteString(errorDetailStyle.Render(fmt.Sprintf("       ↳ error: %s\n", truncateString(entry.Error, maxErrLen))))
+		}
 	}
 
 	return b.String()

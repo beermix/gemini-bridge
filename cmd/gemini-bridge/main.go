@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	Version = "1.0.3"
+	Version = "1.0.4"
 
 	defaultProxyPort = "8045"
 	defaultAdminPort = "8046"
@@ -268,6 +268,14 @@ func runStatus(args []string) {
 	if status.PinnedAccountID != "" {
 		fmt.Printf("Pinned To: %s\n", status.PinnedAccountID)
 	}
+	activeEP := status.ActiveEndpoint
+	if activeEP == "" {
+		activeEP = status.Stats.ActiveEndpoint
+	}
+	if activeEP == "" {
+		activeEP = "cloudcode-pa"
+	}
+	fmt.Printf("Upstream : %s\n", activeEP)
 	fmt.Printf("Uptime   : %s\n", status.Uptime)
 	fmt.Printf("Requests : Total: %d | Success: %d | 429 Cooldown: %d | Errors: %d\n",
 		status.Stats.TotalRequests,
@@ -309,6 +317,20 @@ func runStatus(args []string) {
 			}
 
 			fmt.Printf(" %s%-2d %-32s %-10s %-12s %s\n", prefix, i+1, dispName, st, cdStr, proj)
+		}
+	}
+	if len(status.Stats.RecentErrors) > 0 {
+		fmt.Println("----------------------------------------------------------------")
+		fmt.Printf("Recent Errors (%d):\n", len(status.Stats.RecentErrors))
+		for _, e := range status.Stats.RecentErrors {
+			ep := e.Endpoint
+			if ep == "" {
+				ep = "cloudcode-pa"
+			}
+			fmt.Printf("  [%s] HTTP %d | %s | %s\n", e.Timestamp.Format("15:04:05"), e.Status, ep, e.Path)
+			if e.Error != "" {
+				fmt.Printf("    ↳ %s\n", e.Error)
+			}
 		}
 	}
 	fmt.Println("================================================================")

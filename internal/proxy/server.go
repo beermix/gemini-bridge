@@ -35,6 +35,7 @@ type RequestLogEntry struct {
 	Status       int           `json:"status"`
 	Duration     time.Duration `json:"duration"`
 	AccountEmail string        `json:"account_email"`
+	Endpoint     string        `json:"endpoint,omitempty"`
 	Error        string        `json:"error,omitempty"`
 }
 
@@ -44,7 +45,9 @@ type ServerStats struct {
 	SuccessRequests   int64             `json:"success_requests"`
 	RateLimitRequests int64             `json:"rate_limit_requests"`
 	ErrorRequests     int64             `json:"error_requests"`
+	ActiveEndpoint    string            `json:"active_endpoint"`
 	RecentLogs        []RequestLogEntry `json:"recent_logs"`
+	RecentErrors      []RequestLogEntry `json:"recent_errors"`
 }
 
 // Server provides HTTP proxying between OpenAI/Anthropic SDKs and Google Cloud Code upstream.
@@ -70,7 +73,8 @@ func NewServer(cfg ServerConfig, pool *account.Pool, client *google.Client) *Ser
 		startTime: time.Now(),
 		mux:       http.NewServeMux(),
 		stats: ServerStats{
-			RecentLogs: make([]RequestLogEntry, 0, 50),
+			RecentLogs:   make([]RequestLogEntry, 0, 50),
+			RecentErrors: make([]RequestLogEntry, 0, 20),
 		},
 	}
 
@@ -155,12 +159,22 @@ func (s *Server) GetStats() ServerStats {
 	logsCopy := make([]RequestLogEntry, len(s.stats.RecentLogs))
 	copy(logsCopy, s.stats.RecentLogs)
 
+	errorsCopy := make([]RequestLogEntry, len(s.stats.RecentErrors))
+	copy(errorsCopy, s.stats.RecentErrors)
+
+	activeEP := "cloudcode-pa"
+	if s.client != nil {
+		activeEP = s.client.ActiveEndpoint()
+	}
+
 	return ServerStats{
 		TotalRequests:     s.stats.TotalRequests,
 		SuccessRequests:   s.stats.SuccessRequests,
 		RateLimitRequests: s.stats.RateLimitRequests,
 		ErrorRequests:     s.stats.ErrorRequests,
+		ActiveEndpoint:    activeEP,
 		RecentLogs:        logsCopy,
+		RecentErrors:      errorsCopy,
 	}
 }
 
@@ -174,8 +188,13 @@ func (s *Server) recordRequest(entry RequestLogEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if entry.Endpoint == "" && s.client != nil {
+		entry.Endpoint = s.client.ActiveEndpoint()
+	}
+
 	s.stats.TotalRequests++
-	if entry.Status >= 200 && entry.Status < 400 {
+	isErr := (entry.Status >= 400 || entry.Error != "") && entry.Status != http.StatusTooManyRequests
+	if entry.Status >= 200 && entry.Status < 400 && entry.Error == "" {
 		s.stats.SuccessRequests++
 	} else if entry.Status == http.StatusTooManyRequests {
 		s.stats.RateLimitRequests++
@@ -189,9 +208,21 @@ func (s *Server) recordRequest(entry RequestLogEntry) {
 	}
 	s.stats.RecentLogs = append(s.stats.RecentLogs, entry)
 
+	if isErr || entry.Status == http.StatusTooManyRequests {
+		const maxRecentErrors = 20
+		if len(s.stats.RecentErrors) >= maxRecentErrors {
+			s.stats.RecentErrors = s.stats.RecentErrors[1:]
+		}
+		s.stats.RecentErrors = append(s.stats.RecentErrors, entry)
+	}
+
 	accStr := ""
 	if entry.AccountEmail != "" {
 		accStr = fmt.Sprintf(" [acc: %s]", entry.AccountEmail)
+	}
+	epStr := ""
+	if entry.Endpoint != "" {
+		epStr = fmt.Sprintf(" [ep: %s]", entry.Endpoint)
 	}
 	errStr := ""
 	if entry.Error != "" {
@@ -205,7 +236,7 @@ func (s *Server) recordRequest(entry RequestLogEntry) {
 			modelStr = fmt.Sprintf(" [%s]", entry.Model)
 		}
 	}
-	log.Printf("[proxy] %s %s%s -> %d in %v%s%s", entry.Method, entry.Path, modelStr, entry.Status, entry.Duration.Round(time.Millisecond), accStr, errStr)
+	log.Printf("[proxy] %s %s%s -> %d in %v%s%s%s", entry.Method, entry.Path, modelStr, entry.Status, entry.Duration.Round(time.Millisecond), accStr, epStr, errStr)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

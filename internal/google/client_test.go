@@ -747,3 +747,47 @@ func TestParseGeminiResponse_InvalidJSON(t *testing.T) {
 		t.Error("expected error parsing invalid JSON")
 	}
 }
+
+func TestClient_ActiveEndpointAndWithEndpoint(t *testing.T) {
+	if ShortEndpoint("https://cloudcode-pa.googleapis.com/v1internal") != "cloudcode-pa" {
+		t.Errorf("expected cloudcode-pa, got %s", ShortEndpoint("https://cloudcode-pa.googleapis.com/v1internal"))
+	}
+	if ShortEndpoint("https://daily-cloudcode-pa.googleapis.com/v1internal") != "daily-cloudcode-pa" {
+		t.Errorf("expected daily-cloudcode-pa, got %s", ShortEndpoint("https://daily-cloudcode-pa.googleapis.com/v1internal"))
+	}
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("quota exceeded"))
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hello from fallback"}]}}]}`))
+	}))
+	defer fallback.Close()
+
+	client := NewClient(5 * time.Second)
+	client.SetBaseURLs(primary.URL, fallback.URL)
+
+	acc := &account.CloudAccount{
+		Email: "test@example.com",
+		Token: account.CloudToken{AccessToken: "token"},
+	}
+
+	resp, ep, err := client.GenerateContentWithEndpoint(context.Background(), acc, &GeminiInternalRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	expectedEP := ShortEndpoint(fallback.URL)
+	if ep != expectedEP {
+		t.Errorf("expected endpoint %q, got %q", expectedEP, ep)
+	}
+	if client.ActiveEndpoint() != expectedEP {
+		t.Errorf("expected client.ActiveEndpoint() %q, got %q", expectedEP, client.ActiveEndpoint())
+	}
+}
