@@ -147,7 +147,7 @@ var (
 			Foreground(lipgloss.Color("#B088FF"))
 
 	// Subtle Grid Styles
-	colorGrid = lipgloss.Color("#2A283C")
+	colorGrid = lipgloss.Color("#444455")
 
 	gridSepStyle = lipgloss.NewStyle().
 			Foreground(colorGrid)

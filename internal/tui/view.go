@@ -300,16 +300,18 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 	}
 
 	// Dynamic column layout:
-	// TIME (8) + METHOD (4) + STATUS (3) + DURATION (6) + EP (5) + PATH (22) + ACCOUNT (12)
+	// TIME (8) + METHOD (4) + STATUS (3) + DURATION (6) + EP (5) + PATH (24) + ACCOUNT (12)
 	// 7 vertical separators " │ " = 21 chars + 2 leading indent = 81 fixed chars.
 	// Remaining width goes to MODEL column.
 	accountWidth := 12
-	pathWidth := 22
-	fixedWidth := 81
+	pathWidth := 24
+	fixedWidth := 83
 
 	modelWidth := effectiveWidth - fixedWidth
 	if modelWidth < 25 {
 		modelWidth = 25
+	} else if modelWidth > 35 {
+		modelWidth = 35
 	}
 
 	sep := gridSepStyle.Render("│")
@@ -359,7 +361,8 @@ func renderActivityPanel(stats proxy.ServerStats, width int) string {
 			if maxErrLen < 50 {
 				maxErrLen = 80
 			}
-			b.WriteString(errorDetailStyle.Render(fmt.Sprintf("       ↳ error: %s\n", truncateString(entry.Error, maxErrLen))))
+			b.WriteString(errorDetailStyle.Render(fmt.Sprintf("       ↳ error: %s", truncateString(entry.Error, maxErrLen))))
+			b.WriteString("\n")
 		}
 	}
 
