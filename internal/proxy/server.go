@@ -85,6 +85,8 @@ func NewServer(cfg ServerConfig, pool *account.Pool, client *google.Client) *Ser
 	s.mux.HandleFunc("/v1/models/", s.handleOpenAIModels)
 	s.mux.HandleFunc("/models", s.handleOpenAIModels)
 	s.mux.HandleFunc("/models/", s.handleOpenAIModels)
+	s.mux.HandleFunc("/v1/images/generations", s.handleOpenAIImageGenerations)
+	s.mux.HandleFunc("/images/generations", s.handleOpenAIImageGenerations)
 
 	// Anthropic endpoints
 	s.mux.HandleFunc("/v1/messages", s.handleAnthropicMessages)

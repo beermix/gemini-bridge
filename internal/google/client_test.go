@@ -791,3 +791,101 @@ func TestClient_ActiveEndpointAndWithEndpoint(t *testing.T) {
 		t.Errorf("expected client.ActiveEndpoint() %q, got %q", expectedEP, client.ActiveEndpoint())
 	}
 }
+
+func TestClient_Sandbox_Fallback(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error 1"))
+	}))
+	defer primary.Close()
+
+	daily := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("internal error 2"))
+	}))
+	defer daily.Close()
+
+	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hello from sandbox"}]}}]}`))
+	}))
+	defer sandbox.Close()
+
+	client := NewClient(5 * time.Second)
+	client.SetAllBaseURLs(primary.URL, daily.URL, sandbox.URL)
+
+	acc := &account.CloudAccount{
+		Email: "test@example.com",
+		Token: account.CloudToken{AccessToken: "token"},
+	}
+
+	resp, ep, err := client.GenerateContentWithEndpoint(context.Background(), acc, &GeminiInternalRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	expectedEP := ShortEndpoint(sandbox.URL)
+	if ep != expectedEP {
+		t.Errorf("expected endpoint %q, got %q", expectedEP, ep)
+	}
+}
+
+func TestClient_PrioritizesLastGoodEndpoint(t *testing.T) {
+	var s1Hits int32
+	var s2Hits int32
+
+	s1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s1Hits, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer s1.Close()
+
+	s2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s2Hits, 1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"ok from s2"}]}}]}`))
+	}))
+	defer s2.Close()
+
+	client := NewClient(5 * time.Second)
+	client.SetBaseURLs(s1.URL, s2.URL)
+
+	acc := &account.CloudAccount{
+		Email: "test@example.com",
+		Token: account.CloudToken{AccessToken: "token"},
+	}
+
+	// 1st request: s1 fails, falls back to s2
+	_, ep, err := client.GenerateContentWithEndpoint(context.Background(), acc, &GeminiInternalRequest{})
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	if ep != ShortEndpoint(s2.URL) {
+		t.Fatalf("expected endpoint %q, got %q", ShortEndpoint(s2.URL), ep)
+	}
+	if atomic.LoadInt32(&s1Hits) != 1 || atomic.LoadInt32(&s2Hits) != 1 {
+		t.Fatalf("expected s1:1, s2:1; got s1:%d, s2:%d", s1Hits, s2Hits)
+	}
+
+	// 2nd request: s2 should be prioritized first since it's the lastGoodBaseURL!
+	atomic.StoreInt32(&s1Hits, 0)
+	atomic.StoreInt32(&s2Hits, 0)
+
+	_, ep, err = client.GenerateContentWithEndpoint(context.Background(), acc, &GeminiInternalRequest{})
+	if err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
+	if ep != ShortEndpoint(s2.URL) {
+		t.Fatalf("expected endpoint %q, got %q", ShortEndpoint(s2.URL), ep)
+	}
+	// s1 should NOT have been called at all because s2 was tried first and succeeded!
+	if atomic.LoadInt32(&s1Hits) != 0 {
+		t.Errorf("s1 should not have been called, but was called %d times", atomic.LoadInt32(&s1Hits))
+	}
+	if atomic.LoadInt32(&s2Hits) != 1 {
+		t.Errorf("s2 should have been called 1 time, got %d", atomic.LoadInt32(&s2Hits))
+	}
+}
+

@@ -19,11 +19,13 @@ type GeminiInternalRequest struct {
 // GeminiRequest represents the inner Gemini model generation request payload.
 type GeminiRequest struct {
 	Contents          []GeminiContent    `json:"contents"`
+	SessionID         string             `json:"sessionId,omitempty"`
 	SystemInstruction *GeminiContent     `json:"systemInstruction,omitempty"`
 	Tools             []GeminiTool       `json:"tools,omitempty"`
 	ToolConfig        *GeminiToolConfig  `json:"toolConfig,omitempty"`
 	GenerationConfig  *GenerationConfig  `json:"generationConfig,omitempty"`
 	SafetySettings    []SafetySetting    `json:"safetySettings,omitempty"`
+	Labels            map[string]string  `json:"labels,omitempty"`
 }
 
 // GeminiContent represents a single turn of content in Gemini conversation history.
@@ -71,7 +73,16 @@ type GenerationConfig struct {
 	StopSequences    []string               `json:"stopSequences,omitempty"`
 	ResponseMimeType string                 `json:"responseMimeType,omitempty"`
 	ResponseSchema   map[string]interface{} `json:"responseSchema,omitempty"`
-	ThinkingConfig   *ThinkingConfig        `json:"thinkingConfig,omitempty"`
+	ThinkingConfig     *ThinkingConfig        `json:"thinkingConfig,omitempty"`
+	ResponseModalities []string               `json:"responseModalities,omitempty"`
+	ImageConfig        *GeminiImageConfig     `json:"imageConfig,omitempty"`
+	CandidateCount     int                    `json:"candidateCount,omitempty"`
+}
+
+// GeminiImageConfig specifies aspect ratio or size for image generation.
+type GeminiImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
 }
 
 // ThinkingConfig controls reasoning/thinking parameters in supported models.
@@ -127,10 +138,11 @@ type Candidate struct {
 
 // UsageMetadata records token counts for input and output.
 type UsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount      int `json:"totalTokenCount,omitempty"`
-	ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
+	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 }
 
 // ParseGeminiResponse parses raw JSON bytes into *GeminiResponse, handling both

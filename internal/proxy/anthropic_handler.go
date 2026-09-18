@@ -3,10 +3,12 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"gemini-bridge/internal/google"
@@ -122,6 +124,34 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 				return
 			}
 
+			// Check if non-streaming response has visible assistant content (retry if empty / thought-only)
+			hasVisibleContent := false
+			if resp != nil {
+				for _, cand := range resp.Candidates {
+					for _, p := range cand.Content.Parts {
+						if p.FunctionCall != nil {
+							hasVisibleContent = true
+							break
+						}
+						if !p.Thought && strings.TrimSpace(p.Text) != "" {
+							var pb PlanningBuffer
+							clean, isLeak := pb.Consume(p.Text, true)
+							if !isLeak && strings.TrimSpace(clean) != "" {
+								hasVisibleContent = true
+								break
+							}
+						}
+					}
+					if hasVisibleContent {
+						break
+					}
+				}
+			}
+			if !hasVisibleContent && attempt < maxAttempts-1 {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+
 			// Success
 			msgID := "msg_" + generateID()
 			anthropicResp := FormatAnthropicResponse(msgID, req.Model, resp)
@@ -173,9 +203,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
-		// First-event buffering before committing headers
+		// First-event buffering before committing headers (with 45s TTFT watchdog)
+		firstEventCtx, firstEventCancel := context.WithTimeout(r.Context(), 45*time.Second)
 		reader := bufio.NewReader(stream)
-		firstPayload, firstErr := readFirstSSEPayload(r.Context(), reader)
+		firstPayload, firstErr := readFirstSSEPayload(firstEventCtx, reader)
+		firstEventCancel()
 		if firstErr != nil {
 			stream.Close()
 			if attempt < maxAttempts-1 {
@@ -200,6 +232,33 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
+		// Check if stream finished prematurely on first event without visible content
+		if initResp, _ := ParseGeminiChunk(firstPayload); initResp != nil && len(initResp.Candidates) > 0 {
+			cand := initResp.Candidates[0]
+			if cand.FinishReason != "" {
+				hasVisible := false
+				for _, p := range cand.Content.Parts {
+					if p.FunctionCall != nil {
+						hasVisible = true
+						break
+					}
+					if !p.Thought && strings.TrimSpace(p.Text) != "" {
+						var pb PlanningBuffer
+						clean, isLeak := pb.Consume(p.Text, true)
+						if !isLeak && strings.TrimSpace(clean) != "" {
+							hasVisible = true
+							break
+						}
+					}
+				}
+				if !hasVisible && attempt < maxAttempts-1 {
+					stream.Close()
+					time.Sleep(200 * time.Millisecond)
+					continue
+				}
+			}
+		}
+
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			stream.Close()
@@ -216,6 +275,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 		msgID := "msg_" + generateID()
 		var state AnthropicStreamState
+		var planBuf PlanningBuffer
 
 		processPayload := func(payload []byte) error {
 			geminiResp, err := ParseGeminiChunk(payload)
@@ -224,7 +284,13 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 			}
 
 			if geminiResp.UsageMetadata.PromptTokenCount > 0 {
-				state.InputTokens = geminiResp.UsageMetadata.PromptTokenCount
+				promptTokens := geminiResp.UsageMetadata.PromptTokenCount
+				cachedTokens := geminiResp.UsageMetadata.CachedContentTokenCount
+				if cachedTokens > 0 && promptTokens >= cachedTokens {
+					promptTokens -= cachedTokens
+				}
+				state.InputTokens = promptTokens
+				state.CachedTokens = cachedTokens
 			}
 			if geminiResp.UsageMetadata.CandidatesTokenCount > 0 {
 				state.OutputTokens = geminiResp.UsageMetadata.CandidatesTokenCount
@@ -235,6 +301,20 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 			if len(geminiResp.Candidates) > 0 {
 				for _, cand := range geminiResp.Candidates {
+					var filteredParts []google.GeminiPart
+					for _, part := range cand.Content.Parts {
+						if part.FunctionCall != nil || part.Thought {
+							filteredParts = append(filteredParts, part)
+						} else if part.Text != "" {
+							clean, _ := planBuf.Consume(part.Text, cand.FinishReason != "")
+							if clean != "" {
+								part.Text = clean
+								filteredParts = append(filteredParts, part)
+							}
+						}
+					}
+					cand.Content.Parts = filteredParts
+
 					events := FormatAnthropicEvents(msgID, req.Model, &cand, &state)
 					for _, ev := range events {
 						_, _ = w.Write(ev)

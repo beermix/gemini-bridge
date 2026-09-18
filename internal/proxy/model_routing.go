@@ -73,3 +73,17 @@ func ResolveModel(requestedModel string) string {
 	// Passthrough for exact internal names (e.g. "gemini-pro-agent", custom models)
 	return model
 }
+
+// SanitizePromptText strips or renames prompt tokens/tags known to trigger
+// Google Cloud Code Assist instruction-hierarchy / prompt security filters
+// (such as <system-conventions> which causes upstream throttling to ~20 tps
+// or false HTTP 429 RESOURCE_EXHAUSTED errors; see can1357/oh-my-pi#11883 and
+// Draculabo/AntigravityManager#313).
+func SanitizePromptText(text string) string {
+	if !strings.Contains(text, "system-conventions") {
+		return text
+	}
+	text = strings.ReplaceAll(text, "<system-conventions>", "<conventions>")
+	text = strings.ReplaceAll(text, "</system-conventions>", "</conventions>")
+	return text
+}

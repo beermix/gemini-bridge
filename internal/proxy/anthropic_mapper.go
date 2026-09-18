@@ -106,6 +106,7 @@ type AnthropicStreamState struct {
 	CurrentBlockType string
 	BlockOpen        bool
 	InputTokens      int
+	CachedTokens     int
 	OutputTokens     int
 	ThinkingTokens   int
 	ToolUseEmitted   bool
@@ -123,10 +124,43 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 		Project:            projectID,
 		Model:              model,
 		UserAgent:          "antigravity",
-		RequestType:        "agent",
 		EnabledCreditTypes: []string{"CREDIT_TYPE_UNSPECIFIED"},
 		Request:            google.GeminiRequest{},
 	}
+
+	firstUserPrompt := ""
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			switch c := msg.Content.(type) {
+			case string:
+				firstUserPrompt = c
+			case []AnthropicContentBlock:
+				for _, b := range c {
+					if b.Type == "text" && b.Text != "" {
+						firstUserPrompt = b.Text
+						break
+					}
+				}
+			case []interface{}:
+				for _, item := range c {
+					if m, ok := item.(map[string]interface{}); ok {
+						if txt, ok := m["text"].(string); ok && txt != "" {
+							firstUserPrompt = txt
+							break
+						}
+					}
+				}
+			}
+			if firstUserPrompt != "" {
+				break
+			}
+		}
+	}
+
+	reqID, sessID, labels := GenerateAntigravityRequestEnvelope(model, firstUserPrompt)
+	internalReq.RequestID = reqID
+	internalReq.Request.SessionID = sessID
+	internalReq.Request.Labels = labels
 
 	// 1. Map System prompt
 	var systemParts []google.GeminiPart
@@ -134,19 +168,19 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 		switch s := req.System.(type) {
 		case string:
 			if strings.TrimSpace(s) != "" {
-				systemParts = append(systemParts, google.GeminiPart{Text: s})
+				systemParts = append(systemParts, google.GeminiPart{Text: SanitizePromptText(s)})
 			}
 		case []AnthropicContentBlock:
 			for _, b := range s {
 				if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
-					systemParts = append(systemParts, google.GeminiPart{Text: b.Text})
+					systemParts = append(systemParts, google.GeminiPart{Text: SanitizePromptText(b.Text)})
 				}
 			}
 		case []interface{}:
 			for _, item := range s {
 				if m, ok := item.(map[string]interface{}); ok {
 					if txt, ok := m["text"].(string); ok && strings.TrimSpace(txt) != "" {
-						systemParts = append(systemParts, google.GeminiPart{Text: txt})
+						systemParts = append(systemParts, google.GeminiPart{Text: SanitizePromptText(txt)})
 					}
 				}
 			}
@@ -171,6 +205,7 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 		switch msg.Role {
 		case "assistant":
 			role = "model"
+			toolCallCountInTurn := 0
 			for _, block := range parseAnthropicContentBlocks(msg.Content) {
 				switch block.Type {
 				case "text":
@@ -211,8 +246,16 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 							}
 						}
 					}
+					sig := block.Signature
+					if sig == "" {
+						sig = GetThoughtSignature(block.ID, block.Name)
+					}
+					if sig == "" && toolCallCountInTurn == 0 {
+						sig = SkipThoughtSignatureValidator
+					}
+					toolCallCountInTurn++
 					parts = append(parts, google.GeminiPart{
-						ThoughtSignature: SkipThoughtSignatureValidator,
+						ThoughtSignature: sig,
 						FunctionCall: &google.FunctionCall{
 							ID:   effectiveID,
 							Name: block.Name,
@@ -230,7 +273,7 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 				switch block.Type {
 				case "text":
 					if block.Text != "" {
-						userParts = append(userParts, google.GeminiPart{Text: block.Text})
+						userParts = append(userParts, google.GeminiPart{Text: SanitizePromptText(block.Text)})
 					}
 				case "image":
 					if block.Source != nil && block.Source.Type == "base64" {
@@ -365,7 +408,7 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 			decls = append(decls, google.FunctionDeclaration{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  t.InputSchema,
+				Parameters:  NormalizeSchemaForGoogle(t.InputSchema),
 			})
 		}
 		if len(decls) > 0 {
@@ -373,7 +416,81 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 		}
 	}
 
-	// 4. Map GenerationConfig
+	// 4. Map ToolChoice
+	if len(req.Tools) > 0 {
+		if req.ToolChoice != nil {
+			switch tc := req.ToolChoice.(type) {
+			case string:
+				switch strings.ToLower(tc) {
+				case "auto":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+					}
+				case "any", "required":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "ANY"},
+					}
+				case "none":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "NONE"},
+					}
+				}
+			case map[string]interface{}:
+				tcType, _ := tc["type"].(string)
+				switch strings.ToLower(tcType) {
+				case "auto":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+					}
+				case "any":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "ANY"},
+					}
+				case "tool":
+					if toolName, ok := tc["name"].(string); ok && toolName != "" {
+						internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+							FunctionCallingConfig: &google.FunctionCallingConfig{
+								Mode:                 "ANY",
+								AllowedFunctionNames: []string{toolName},
+							},
+						}
+					}
+				case "none":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "NONE"},
+					}
+				}
+			}
+		}
+
+		// Antigravity's default tool mode is VALIDATED (verified for Gemini and Claude)
+		if internalReq.Request.ToolConfig == nil {
+			internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+				FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+			}
+		}
+	}
+
+	// Claude on Antigravity always forces VALIDATED, even with no tools declared
+	if strings.HasPrefix(model, "claude-") && internalReq.Request.ToolConfig == nil {
+		internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+			FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+		}
+	}
+
+	// Cloud Code Assist drops toolConfig on Gemini routes: under mode "ANY" it answers in text.
+	// We restate forced tool choice by appending ForcedToolDirective to transcript.
+	if internalReq.Request.ToolConfig != nil &&
+		internalReq.Request.ToolConfig.FunctionCallingConfig != nil &&
+		internalReq.Request.ToolConfig.FunctionCallingConfig.Mode == "ANY" &&
+		!strings.HasPrefix(model, "claude-") {
+		internalReq.Request.Contents = append(internalReq.Request.Contents, google.GeminiContent{
+			Role:  "user",
+			Parts: []google.GeminiPart{{Text: ForcedToolDirective}},
+		})
+	}
+
+	// 5. Map GenerationConfig
 	genCfg := &google.GenerationConfig{
 		Temperature:   req.Temperature,
 		TopP:          req.TopP,
@@ -394,6 +511,7 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 			genCfg.ThinkingConfig = &google.ThinkingConfig{
 				IncludeThoughts: &includeThoughts,
 				ThinkingBudget:  &zeroBudget,
+				ThinkingLevel:   "LOW",
 			}
 		} else if req.Thinking.Type == "adaptive" {
 			includeThoughts := true
@@ -453,6 +571,15 @@ func MapAnthropicToGemini(req *AnthropicMessagesRequest, projectID string) *goog
 		genCfg.ThinkingConfig = &google.ThinkingConfig{
 			IncludeThoughts: &includeThoughts,
 		}
+	} else if strings.Contains(model, "gemini-3") || strings.Contains(model, "gemini-2") {
+		// Explicitly suppress default background reasoning to save token quotas
+		includeThoughts := false
+		zeroBudget := 0
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingBudget:  &zeroBudget,
+			ThinkingLevel:   "LOW",
+		}
 	}
 
 	internalReq.Request.GenerationConfig = genCfg
@@ -470,6 +597,13 @@ func FormatAnthropicEvents(msgID, model string, cand *google.Candidate, state *A
 	// 1. Emit message_start on the very first chunk
 	if !state.MessageStarted {
 		state.MessageStarted = true
+		usage := map[string]interface{}{
+			"input_tokens":  state.InputTokens,
+			"output_tokens": 1,
+		}
+		if state.CachedTokens > 0 {
+			usage["cache_read_input_tokens"] = state.CachedTokens
+		}
 		msgStart := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -480,10 +614,7 @@ func FormatAnthropicEvents(msgID, model string, cand *google.Candidate, state *A
 				"content":       []interface{}{},
 				"stop_reason":   nil,
 				"stop_sequence": nil,
-				"usage": map[string]interface{}{
-					"input_tokens":  state.InputTokens,
-					"output_tokens": 1,
-				},
+				"usage":         usage,
 			},
 		}
 		events = append(events, formatAnthropicSSE("message_start", msgStart))
@@ -743,6 +874,12 @@ func FormatAnthropicResponse(msgID, model string, resp *google.GeminiResponse) *
 		}
 	}
 
+	inputTokens := resp.UsageMetadata.PromptTokenCount
+	cachedTokens := resp.UsageMetadata.CachedContentTokenCount
+	if cachedTokens > 0 && inputTokens >= cachedTokens {
+		inputTokens -= cachedTokens
+	}
+
 	out := &AnthropicMessagesResponse{
 		ID:      msgID,
 		Type:    "message",
@@ -750,9 +887,10 @@ func FormatAnthropicResponse(msgID, model string, resp *google.GeminiResponse) *
 		Model:   model,
 		Content: []AnthropicContentBlock{},
 		Usage: AnthropicUsage{
-			InputTokens:         resp.UsageMetadata.PromptTokenCount,
-			OutputTokens:        resp.UsageMetadata.CandidatesTokenCount,
-			OutputTokensDetails: usageDetails,
+			InputTokens:          inputTokens,
+			OutputTokens:         resp.UsageMetadata.CandidatesTokenCount,
+			CacheReadInputTokens: cachedTokens,
+			OutputTokensDetails:  usageDetails,
 		},
 	}
 

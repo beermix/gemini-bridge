@@ -16,12 +16,14 @@ import (
 )
 
 const (
-	// DefaultPrimaryBaseURL is the primary Google Cloud Code internal API base URL.
-	DefaultPrimaryBaseURL = "https://cloudcode-pa.googleapis.com/v1internal"
-	// DefaultFallbackBaseURL is the secondary Google Cloud Code internal API base URL.
-	DefaultFallbackBaseURL = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+	// DefaultPrimaryBaseURL is the primary Google Cloud Code internal API base URL (Antigravity Hub).
+	DefaultPrimaryBaseURL = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+	// DefaultFallbackBaseURL is the secondary Google Cloud Code internal API base URL (Antigravity Hub Sandbox).
+	DefaultFallbackBaseURL = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal"
+	// DefaultSandboxBaseURL is the tertiary sandbox Google Cloud Code internal API base URL.
+	DefaultSandboxBaseURL = "https://cloudcode-pa.googleapis.com/v1internal"
 	// DefaultUserAgent is the default User-Agent sent in upstream requests.
-	DefaultUserAgent = "antigravity/1.11.3 Linux/amd64"
+	DefaultUserAgent = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)"
 )
 
 // UpstreamError represents an HTTP error response returned by Google upstream.
@@ -40,7 +42,10 @@ type Client struct {
 	mu              sync.RWMutex
 	primaryBaseURL  string
 	fallbackBaseURL string
+	sandboxBaseURL  string
 	activeEndpoint  string
+	lastGoodBaseURL string
+	lastGoodUntil   time.Time
 	timeout         time.Duration
 
 	transportMu sync.RWMutex
@@ -50,7 +55,10 @@ type Client struct {
 // ShortEndpoint returns a simplified, human-friendly name for an endpoint URL.
 func ShortEndpoint(rawURL string) string {
 	if rawURL == "" {
-		return "cloudcode-pa"
+		return "daily-cloudcode-pa"
+	}
+	if strings.Contains(rawURL, "sandbox") {
+		return "daily-cloudcode-pa.sandbox"
 	}
 	if strings.Contains(rawURL, "daily-cloudcode-pa") {
 		return "daily-cloudcode-pa"
@@ -74,6 +82,7 @@ func NewClient(timeout time.Duration) *Client {
 	return &Client{
 		primaryBaseURL:  DefaultPrimaryBaseURL,
 		fallbackBaseURL: DefaultFallbackBaseURL,
+		sandboxBaseURL:  DefaultSandboxBaseURL,
 		activeEndpoint:  ShortEndpoint(DefaultPrimaryBaseURL),
 		timeout:         timeout,
 		transports:      make(map[string]*http.Transport),
@@ -94,6 +103,8 @@ func (c *Client) setActiveEndpoint(endpoint string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.activeEndpoint = ShortEndpoint(endpoint)
+	c.lastGoodBaseURL = endpoint
+	c.lastGoodUntil = time.Now().Add(5 * time.Minute)
 }
 
 // SetBaseURLs overrides the primary and fallback base URLs (useful for unit tests).
@@ -102,7 +113,22 @@ func (c *Client) SetBaseURLs(primary, fallback string) {
 	defer c.mu.Unlock()
 	c.primaryBaseURL = primary
 	c.fallbackBaseURL = fallback
+	c.sandboxBaseURL = ""
 	c.activeEndpoint = ShortEndpoint(primary)
+	c.lastGoodBaseURL = ""
+	c.lastGoodUntil = time.Time{}
+}
+
+// SetAllBaseURLs overrides primary, fallback, and sandbox base URLs.
+func (c *Client) SetAllBaseURLs(primary, fallback, sandbox string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.primaryBaseURL = primary
+	c.fallbackBaseURL = fallback
+	c.sandboxBaseURL = sandbox
+	c.activeEndpoint = ShortEndpoint(primary)
+	c.lastGoodBaseURL = ""
+	c.lastGoodUntil = time.Time{}
 }
 
 // PrimaryBaseURL returns the configured primary base URL.
@@ -119,10 +145,41 @@ func (c *Client) FallbackBaseURL() string {
 	return c.fallbackBaseURL
 }
 
+// SandboxBaseURL returns the configured sandbox base URL.
+func (c *Client) SandboxBaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sandboxBaseURL
+}
+
 func (c *Client) getBaseURLs() (string, string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.primaryBaseURL, c.fallbackBaseURL
+}
+
+func (c *Client) getEndpoints() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var eps []string
+	seen := make(map[string]bool)
+
+	// Prioritize last working endpoint if recorded and not expired
+	if c.lastGoodBaseURL != "" && time.Now().Before(c.lastGoodUntil) {
+		eps = append(eps, c.lastGoodBaseURL)
+		seen[c.lastGoodBaseURL] = true
+	}
+
+	for _, ep := range []string{c.primaryBaseURL, c.fallbackBaseURL, c.sandboxBaseURL} {
+		if ep != "" && !seen[ep] {
+			eps = append(eps, ep)
+			seen[ep] = true
+		}
+	}
+	if len(eps) == 0 {
+		eps = []string{DefaultPrimaryBaseURL}
+	}
+	return eps
 }
 
 // CloseIdleConnections closes all idle HTTP connections across cached transports.
@@ -156,6 +213,12 @@ func (c *Client) getHTTPClient(acc *account.CloudAccount, isStreaming bool) (*ht
 					Proxy: http.ProxyFromEnvironment,
 				}
 			}
+
+			// Connection pooling optimization for low-latency streaming
+			baseTr.MaxIdleConns = 100
+			baseTr.MaxIdleConnsPerHost = 50
+			baseTr.IdleConnTimeout = 90 * time.Second
+			baseTr.DisableKeepAlives = false
 
 			if proxyURL != "" {
 				cleanURL := proxyURL
@@ -230,11 +293,12 @@ func (c *Client) newRequest(ctx context.Context, endpoint string, payload []byte
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+acc.Token.AccessToken)
 
-	ua := DefaultUserAgent
+	ua := GetAntigravityUserAgent()
 	if customUA != "" {
 		ua = customUA
 	}
 	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Client-Metadata", ClientMetadataHeader)
 
 	targetProject := acc.Token.ProjectID
 	if targetProject == "" {
@@ -295,26 +359,29 @@ func (c *Client) StreamGenerateContentWithEndpoint(ctx context.Context, acc *acc
 		return nil, "", fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	primaryURL, fallbackURL := c.getBaseURLs()
-	primaryEndpoint := buildEndpoint(primaryURL, "streamGenerateContent?alt=sse")
+	endpoints := c.getEndpoints()
+	var resp *http.Response
+	var doErr error
+	var usedURL string
 
-	req, err := c.newRequest(ctx, primaryEndpoint, payload, acc, reqBody.Project, body.UserAgent)
-	if err != nil {
-		return nil, ShortEndpoint(primaryURL), err
-	}
+	for i, currentURL := range endpoints {
+		endpoint := buildEndpoint(currentURL, "streamGenerateContent?alt=sse")
+		req, err := c.newRequest(ctx, endpoint, payload, acc, reqBody.Project, body.UserAgent)
+		if err != nil {
+			return nil, ShortEndpoint(currentURL), err
+		}
 
-	usedURL := primaryURL
-	resp, doErr := httpClient.Do(req)
-	if shouldFallback(doErr, resp, ctx) && fallbackURL != "" && fallbackURL != primaryURL {
-		if resp != nil {
-			resp.Body.Close()
+		usedURL = currentURL
+		resp, doErr = httpClient.Do(req)
+		isLast := (i == len(endpoints)-1)
+
+		if !isLast && shouldFallback(doErr, resp, ctx) {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
 		}
-		fallbackEndpoint := buildEndpoint(fallbackURL, "streamGenerateContent?alt=sse")
-		fallbackReq, fErr := c.newRequest(ctx, fallbackEndpoint, payload, acc, reqBody.Project, body.UserAgent)
-		if fErr == nil {
-			usedURL = fallbackURL
-			resp, doErr = httpClient.Do(fallbackReq)
-		}
+		break
 	}
 
 	usedEP := ShortEndpoint(usedURL)
@@ -371,26 +438,29 @@ func (c *Client) GenerateContentWithEndpoint(ctx context.Context, acc *account.C
 		return nil, "", fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	primaryURL, fallbackURL := c.getBaseURLs()
-	primaryEndpoint := buildEndpoint(primaryURL, "generateContent")
+	endpoints := c.getEndpoints()
+	var resp *http.Response
+	var doErr error
+	var usedURL string
 
-	req, err := c.newRequest(ctx, primaryEndpoint, payload, acc, reqBody.Project, body.UserAgent)
-	if err != nil {
-		return nil, ShortEndpoint(primaryURL), err
-	}
+	for i, currentURL := range endpoints {
+		endpoint := buildEndpoint(currentURL, "generateContent")
+		req, err := c.newRequest(ctx, endpoint, payload, acc, reqBody.Project, body.UserAgent)
+		if err != nil {
+			return nil, ShortEndpoint(currentURL), err
+		}
 
-	usedURL := primaryURL
-	resp, doErr := httpClient.Do(req)
-	if shouldFallback(doErr, resp, ctx) && fallbackURL != "" && fallbackURL != primaryURL {
-		if resp != nil {
-			resp.Body.Close()
+		usedURL = currentURL
+		resp, doErr = httpClient.Do(req)
+		isLast := (i == len(endpoints)-1)
+
+		if !isLast && shouldFallback(doErr, resp, ctx) {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
 		}
-		fallbackEndpoint := buildEndpoint(fallbackURL, "generateContent")
-		fallbackReq, fErr := c.newRequest(ctx, fallbackEndpoint, payload, acc, reqBody.Project, body.UserAgent)
-		if fErr == nil {
-			usedURL = fallbackURL
-			resp, doErr = httpClient.Do(fallbackReq)
-		}
+		break
 	}
 
 	usedEP := ShortEndpoint(usedURL)

@@ -17,6 +17,10 @@ const (
 	// and Hermes to bypass thought signature validation for cross-provider tool calls.
 	SkipThoughtSignatureValidator = "skip_thought_signature_validator"
 
+	// ForcedToolDirective is injected into the transcript when tool_choice is forced on Gemini routes,
+	// because Cloud Code Assist drops functionCallingConfig mode "ANY" on Gemini models.
+	ForcedToolDirective = "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now."
+
 	// InterruptedResponsePlaceholder is interposed between a functionResponse user turn
 	// and a human user text turn to preserve Gemini alternation while preventing text fold.
 	InterruptedResponsePlaceholder = "[The previous response was interrupted before it completed.]"
@@ -69,7 +73,7 @@ func IsInvalidThoughtSignatureError(err error) bool {
 
 // StoreThoughtSignature records a thought signature for a tool call ID and/or function name.
 func StoreThoughtSignature(callID, funcName, sig string) {
-	if sig == "" {
+	if sig == "" || sig == SkipThoughtSignatureValidator {
 		return
 	}
 	thoughtSigMu.Lock()
@@ -98,16 +102,19 @@ func GetThoughtSignature(callID, funcName string) string {
 	thoughtSigMu.RLock()
 	defer thoughtSigMu.RUnlock()
 	if callID != "" {
-		if sig, ok := thoughtSigCache[callID]; ok && sig != "" {
+		if sig, ok := thoughtSigCache[callID]; ok && sig != "" && sig != SkipThoughtSignatureValidator {
 			return sig
 		}
 	}
 	if funcName != "" {
-		if sig, ok := thoughtSigCache["fn:"+funcName]; ok && sig != "" {
+		if sig, ok := thoughtSigCache["fn:"+funcName]; ok && sig != "" && sig != SkipThoughtSignatureValidator {
 			return sig
 		}
 	}
-	return lastThoughtSig
+	if lastThoughtSig != SkipThoughtSignatureValidator {
+		return lastThoughtSig
+	}
+	return ""
 }
 
 // OpenAIChatRequest represents an incoming OpenAI-compatible chat completion request.
@@ -207,11 +214,17 @@ type OpenAICompletionTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
+// OpenAIPromptTokensDetails tracks breakdown of prompt tokens such as cached tokens.
+type OpenAIPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
 // OpenAIUsage tracks token usage metrics.
 type OpenAIUsage struct {
 	PromptTokens            int                            `json:"prompt_tokens"`
 	CompletionTokens        int                            `json:"completion_tokens"`
 	TotalTokens             int                            `json:"total_tokens"`
+	PromptTokensDetails     *OpenAIPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *OpenAICompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
@@ -227,7 +240,6 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 		Project:            projectID,
 		Model:              model,
 		UserAgent:          "antigravity",
-		RequestType:        "agent",
 		EnabledCreditTypes: []string{"CREDIT_TYPE_UNSPECIFIED"},
 		Request:            google.GeminiRequest{},
 	}
@@ -247,6 +259,26 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 			convMessages = append(convMessages, msg)
 		}
 	}
+
+	firstUserPrompt := ""
+	for _, msg := range convMessages {
+		if msg.Role == "user" {
+			for _, part := range parseOpenAIContentParts(msg.Content) {
+				if part.Text != "" {
+					firstUserPrompt = part.Text
+					break
+				}
+			}
+			if firstUserPrompt != "" {
+				break
+			}
+		}
+	}
+
+	reqID, sessID, labels := GenerateAntigravityRequestEnvelope(model, firstUserPrompt)
+	internalReq.RequestID = reqID
+	internalReq.Request.SessionID = sessID
+	internalReq.Request.Labels = labels
 
 	if len(systemParts) > 0 {
 		internalReq.Request.SystemInstruction = &google.GeminiContent{
@@ -268,7 +300,7 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 		case "assistant":
 			role = "model"
 			parts = append(parts, parseOpenAIContentParts(msg.Content)...)
-			for _, tc := range msg.ToolCalls {
+			for i, tc := range msg.ToolCalls {
 				var argsMap map[string]interface{}
 				if tc.Function.Arguments != "" {
 					_ = json.Unmarshal([]byte(tc.Function.Arguments), &argsMap)
@@ -292,6 +324,9 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 					}
 				}
 				sig := GetThoughtSignature(tc.ID, tc.Function.Name)
+				if sig == "" && i == 0 {
+					sig = SkipThoughtSignatureValidator
+				}
 				parts = append(parts, google.GeminiPart{
 					ThoughtSignature: sig,
 					FunctionCall: &google.FunctionCall{
@@ -415,7 +450,7 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 				decls = append(decls, google.FunctionDeclaration{
 					Name:        tool.Function.Name,
 					Description: tool.Function.Description,
-					Parameters:  tool.Function.Parameters,
+					Parameters:  NormalizeSchemaForGoogle(tool.Function.Parameters),
 				})
 			}
 		}
@@ -424,36 +459,64 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 		}
 	}
 
-	// 4. Map ToolChoice (only if tools are present)
-	if len(req.Tools) > 0 && req.ToolChoice != nil {
-		switch tc := req.ToolChoice.(type) {
-		case string:
-			switch strings.ToLower(tc) {
-			case "auto":
-				internalReq.Request.ToolConfig = &google.GeminiToolConfig{
-					FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "AUTO"},
-				}
-			case "none":
-				internalReq.Request.ToolConfig = &google.GeminiToolConfig{
-					FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "NONE"},
-				}
-			case "required":
-				internalReq.Request.ToolConfig = &google.GeminiToolConfig{
-					FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "ANY"},
-				}
-			}
-		case map[string]interface{}:
-			if fn, ok := tc["function"].(map[string]interface{}); ok {
-				if fnName, ok := fn["name"].(string); ok && fnName != "" {
+	// 4. Map ToolChoice
+	if len(req.Tools) > 0 {
+		if req.ToolChoice != nil {
+			switch tc := req.ToolChoice.(type) {
+			case string:
+				switch strings.ToLower(tc) {
+				case "auto":
 					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
-						FunctionCallingConfig: &google.FunctionCallingConfig{
-							Mode:                 "ANY",
-							AllowedFunctionNames: []string{fnName},
-						},
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+					}
+				case "none":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "NONE"},
+					}
+				case "required":
+					internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+						FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "ANY"},
+					}
+				}
+			case map[string]interface{}:
+				if fn, ok := tc["function"].(map[string]interface{}); ok {
+					if fnName, ok := fn["name"].(string); ok && fnName != "" {
+						internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+							FunctionCallingConfig: &google.FunctionCallingConfig{
+								Mode:                 "ANY",
+								AllowedFunctionNames: []string{fnName},
+							},
+						}
 					}
 				}
 			}
 		}
+
+		// Antigravity's default tool mode is VALIDATED (verified for Gemini and Claude)
+		if internalReq.Request.ToolConfig == nil {
+			internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+				FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+			}
+		}
+	}
+
+	// Claude on Antigravity always forces VALIDATED, even with no tools declared
+	if strings.HasPrefix(model, "claude-") && internalReq.Request.ToolConfig == nil {
+		internalReq.Request.ToolConfig = &google.GeminiToolConfig{
+			FunctionCallingConfig: &google.FunctionCallingConfig{Mode: "VALIDATED"},
+		}
+	}
+
+	// Cloud Code Assist drops toolConfig on Gemini routes: under mode "ANY" it answers in text.
+	// We restate forced tool choice by appending ForcedToolDirective to transcript.
+	if internalReq.Request.ToolConfig != nil &&
+		internalReq.Request.ToolConfig.FunctionCallingConfig != nil &&
+		internalReq.Request.ToolConfig.FunctionCallingConfig.Mode == "ANY" &&
+		!strings.HasPrefix(model, "claude-") {
+		internalReq.Request.Contents = append(internalReq.Request.Contents, google.GeminiContent{
+			Role:  "user",
+			Parts: []google.GeminiPart{{Text: ForcedToolDirective}},
+		})
 	}
 
 	// 5. Map GenerationConfig
@@ -519,6 +582,7 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 			genCfg.ThinkingConfig = &google.ThinkingConfig{
 				IncludeThoughts: &includeThoughts,
 				ThinkingBudget:  &zeroBudget,
+				ThinkingLevel:   "LOW",
 			}
 		case "minimal", "low":
 			includeThoughts := true
@@ -561,6 +625,15 @@ func MapOpenAIToGemini(req *OpenAIChatRequest, projectID string) *google.GeminiI
 		includeThoughts := true
 		genCfg.ThinkingConfig = &google.ThinkingConfig{
 			IncludeThoughts: &includeThoughts,
+		}
+	} else if strings.Contains(model, "gemini-3") || strings.Contains(model, "gemini-2") {
+		// Explicitly suppress default background reasoning to save token quotas
+		includeThoughts := false
+		zeroBudget := 0
+		genCfg.ThinkingConfig = &google.ThinkingConfig{
+			IncludeThoughts: &includeThoughts,
+			ThinkingBudget:  &zeroBudget,
+			ThinkingLevel:   "LOW",
 		}
 	}
 
@@ -694,10 +767,22 @@ func FormatOpenAIChunkWithOptions(streamID, model string, cand *google.Candidate
 				ReasoningTokens: usage.ThoughtsTokenCount,
 			}
 		}
+		promptTokens := usage.PromptTokenCount
+		cachedTokens := usage.CachedContentTokenCount
+		if cachedTokens > 0 && promptTokens >= cachedTokens {
+			promptTokens -= cachedTokens
+		}
+		var promptDetails *OpenAIPromptTokensDetails
+		if cachedTokens > 0 {
+			promptDetails = &OpenAIPromptTokensDetails{
+				CachedTokens: cachedTokens,
+			}
+		}
 		chunk.Usage = &OpenAIUsage{
-			PromptTokens:            usage.PromptTokenCount,
+			PromptTokens:            promptTokens,
 			CompletionTokens:        usage.CandidatesTokenCount,
 			TotalTokens:             usage.TotalTokenCount,
+			PromptTokensDetails:     promptDetails,
 			CompletionTokensDetails: details,
 		}
 	}
@@ -723,6 +808,18 @@ func FormatOpenAIResponse(respID, model string, resp *google.GeminiResponse) *Op
 		}
 	}
 
+	promptTokens := resp.UsageMetadata.PromptTokenCount
+	cachedTokens := resp.UsageMetadata.CachedContentTokenCount
+	if cachedTokens > 0 && promptTokens >= cachedTokens {
+		promptTokens -= cachedTokens
+	}
+	var promptDetails *OpenAIPromptTokensDetails
+	if cachedTokens > 0 {
+		promptDetails = &OpenAIPromptTokensDetails{
+			CachedTokens: cachedTokens,
+		}
+	}
+
 	openAIResp := &OpenAIChatResponse{
 		ID:      respID,
 		Object:  "chat.completion",
@@ -730,9 +827,10 @@ func FormatOpenAIResponse(respID, model string, resp *google.GeminiResponse) *Op
 		Model:   model,
 		Choices: make([]OpenAIChoice, 0, len(resp.Candidates)),
 		Usage: &OpenAIUsage{
-			PromptTokens:            resp.UsageMetadata.PromptTokenCount,
+			PromptTokens:            promptTokens,
 			CompletionTokens:        resp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:             resp.UsageMetadata.TotalTokenCount,
+			PromptTokensDetails:     promptDetails,
 			CompletionTokensDetails: usageDetails,
 		},
 	}
@@ -821,13 +919,13 @@ func parseOpenAIContentParts(content interface{}) []google.GeminiPart {
 		if c == "" {
 			return nil
 		}
-		return []google.GeminiPart{{Text: c}}
+		return []google.GeminiPart{{Text: SanitizePromptText(c)}}
 
 	case []OpenAIContentPart:
 		var parts []google.GeminiPart
 		for _, p := range c {
 			if p.Type == "text" && p.Text != "" {
-				parts = append(parts, google.GeminiPart{Text: p.Text})
+				parts = append(parts, google.GeminiPart{Text: SanitizePromptText(p.Text)})
 			} else if p.Type == "image_url" && p.ImageURL != nil {
 				if mime, data, ok := parseDataURL(p.ImageURL.URL); ok {
 					parts = append(parts, google.GeminiPart{
@@ -846,7 +944,7 @@ func parseOpenAIContentParts(content interface{}) []google.GeminiPart {
 				switch pType {
 				case "text":
 					if txt, ok := m["text"].(string); ok && txt != "" {
-						parts = append(parts, google.GeminiPart{Text: txt})
+						parts = append(parts, google.GeminiPart{Text: SanitizePromptText(txt)})
 					}
 				case "image_url":
 					if imgMap, ok := m["image_url"].(map[string]interface{}); ok {
@@ -886,6 +984,7 @@ func parseDataURL(url string) (mimeType string, data string, ok bool) {
 func cleanThinkingTags(s string) string {
 	s = strings.ReplaceAll(s, "<think>", "")
 	s = strings.ReplaceAll(s, "</think>", "")
+	s = StripThinkingFenceDelimiters(s)
 	return s
 }
 

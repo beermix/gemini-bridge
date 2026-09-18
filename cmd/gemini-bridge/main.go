@@ -171,6 +171,11 @@ func runServe(args []string) {
 	// Initialize Google upstream client with 120s timeout
 	googleClient := google.NewClient(120 * time.Second)
 
+	// Start dynamic Antigravity User-Agent auto-updater (1-hour check interval)
+	uaCtx, uaCancel := context.WithCancel(context.Background())
+	defer uaCancel()
+	google.DefaultUserAgentMgr().StartAutoUpdater(uaCtx, 1*time.Hour)
+
 	// Initialize Proxy Server
 	proxyCfg := proxy.ServerConfig{
 		Addr:   proxyAddr,

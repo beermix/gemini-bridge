@@ -815,7 +815,7 @@ func TestMapper_OpenAIToGemini_ToolChoiceAndStopVariants(t *testing.T) {
 		choice   string
 		wantMode string
 	}{
-		{"auto", "AUTO"},
+		{"auto", "VALIDATED"},
 		{"none", "NONE"},
 		{"required", "ANY"},
 	}
@@ -1290,6 +1290,361 @@ func TestMapper_AnthropicToGemini_DuplicateToolCallID(t *testing.T) {
 		t.Errorf("expected fr2.ID == 'toolu_dup_1_d2', got %+v", fr2)
 	}
 }
+
+func TestMapper_RequestTypeOmission_And_PromptSanitization(t *testing.T) {
+	// 1. Anthropic mapper test
+	anthropicReq := &proxy.AnthropicMessagesRequest{
+		Model: "gemini-3.8-flash",
+		System: "<system-conventions>\nRFC 2119: MUST, REQUIRED\n</system-conventions>",
+		Messages: []proxy.AnthropicMessage{
+			{Role: "user", Content: "Hello with <system-conventions>test</system-conventions>"},
+		},
+	}
+
+	geminiAnthropic := proxy.MapAnthropicToGemini(anthropicReq, "test-project")
+	if geminiAnthropic.RequestType != "" {
+		t.Errorf("expected empty RequestType for Anthropic mapper, got %q", geminiAnthropic.RequestType)
+	}
+
+	// Verify JSON serialization omits requestType completely
+	anthropicBytes, err := json.Marshal(geminiAnthropic)
+	if err != nil {
+		t.Fatalf("failed to marshal Anthropic gemini request: %v", err)
+	}
+	if strings.Contains(string(anthropicBytes), `"requestType"`) {
+		t.Errorf("expected JSON to omit 'requestType', but found it in: %s", string(anthropicBytes))
+	}
+
+	// Verify prompt sanitization in system instruction and user content
+	if geminiAnthropic.Request.SystemInstruction == nil || len(geminiAnthropic.Request.SystemInstruction.Parts) == 0 {
+		t.Fatalf("expected systemInstruction parts in Anthropic request")
+	}
+	sysText := geminiAnthropic.Request.SystemInstruction.Parts[0].Text
+	if strings.Contains(sysText, "system-conventions") {
+		t.Errorf("expected <system-conventions> to be sanitized, got: %s", sysText)
+	}
+	if !strings.Contains(sysText, "<conventions>") || !strings.Contains(sysText, "</conventions>") {
+		t.Errorf("expected <conventions> in sanitized text, got: %s", sysText)
+	}
+
+	userText := geminiAnthropic.Request.Contents[0].Parts[0].Text
+	if strings.Contains(userText, "system-conventions") {
+		t.Errorf("expected user text <system-conventions> to be sanitized, got: %s", userText)
+	}
+
+	// 2. OpenAI mapper test
+	openAIReq := &proxy.OpenAIChatRequest{
+		Model: "gemini-3.8-flash",
+		Messages: []proxy.OpenAIMessage{
+			{Role: "system", Content: "<system-conventions>\nRFC 2119: MUST\n</system-conventions>"},
+			{Role: "user", Content: "User message with <system-conventions>tag</system-conventions>"},
+		},
+	}
+
+	geminiOpenAI := proxy.MapOpenAIToGemini(openAIReq, "test-project")
+	if geminiOpenAI.RequestType != "" {
+		t.Errorf("expected empty RequestType for OpenAI mapper, got %q", geminiOpenAI.RequestType)
+	}
+
+	openAIBytes, err := json.Marshal(geminiOpenAI)
+	if err != nil {
+		t.Fatalf("failed to marshal OpenAI gemini request: %v", err)
+	}
+	if strings.Contains(string(openAIBytes), `"requestType"`) {
+		t.Errorf("expected JSON to omit 'requestType', but found it in: %s", string(openAIBytes))
+	}
+
+	if geminiOpenAI.Request.SystemInstruction == nil || len(geminiOpenAI.Request.SystemInstruction.Parts) == 0 {
+		t.Fatalf("expected systemInstruction parts in OpenAI request")
+	}
+	openAISysText := geminiOpenAI.Request.SystemInstruction.Parts[0].Text
+	if strings.Contains(openAISysText, "system-conventions") {
+		t.Errorf("expected OpenAI system text to be sanitized, got: %s", openAISysText)
+	}
+	if !strings.Contains(openAISysText, "<conventions>") {
+		t.Errorf("expected <conventions> in OpenAI system text, got: %s", openAISysText)
+	}
+
+	openAIUserText := geminiOpenAI.Request.Contents[0].Parts[0].Text
+	if strings.Contains(openAIUserText, "system-conventions") {
+		t.Errorf("expected OpenAI user text to be sanitized, got: %s", openAIUserText)
+	}
+}
+
+func TestMapper_ToolSchemaNormalization(t *testing.T) {
+	// 1. OpenAI Tool Schema Normalization
+	openAIReq := &proxy.OpenAIChatRequest{
+		Model: "gemini-3.8-flash",
+		Messages: []proxy.OpenAIMessage{
+			{Role: "user", Content: "Hello"},
+		},
+		Tools: []proxy.OpenAITool{
+			{
+				Type: "function",
+				Function: proxy.OpenAIFunction{
+					Name:        "search",
+					Description: "Search internet",
+					Parameters: map[string]interface{}{
+						"$schema":              "http://json-schema.org/draft-07/schema#",
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"q": map[string]interface{}{
+								"type":      "string",
+								"pattern":   ".*",
+								"minLength": 1,
+							},
+							"limit": map[string]interface{}{
+								"type": []interface{}{"integer", "null"},
+							},
+						},
+						"required": []interface{}{"q"},
+					},
+				},
+			},
+		},
+	}
+
+	geminiOpenAI := proxy.MapOpenAIToGemini(openAIReq, "proj-1")
+	if len(geminiOpenAI.Request.Tools) == 0 || len(geminiOpenAI.Request.Tools[0].FunctionDeclarations) == 0 {
+		t.Fatalf("expected function declaration in OpenAI mapped request")
+	}
+	decl := geminiOpenAI.Request.Tools[0].FunctionDeclarations[0]
+	if _, ok := decl.Parameters["$schema"]; ok {
+		t.Errorf("expected $schema to be removed from parameters")
+	}
+	if _, ok := decl.Parameters["additionalProperties"]; ok {
+		t.Errorf("expected additionalProperties to be removed from parameters")
+	}
+	props := decl.Parameters["properties"].(map[string]interface{})
+	qProp := props["q"].(map[string]interface{})
+	if _, ok := qProp["pattern"]; ok {
+		t.Errorf("expected pattern to be removed from property q")
+	}
+	limitProp := props["limit"].(map[string]interface{})
+	if limitProp["type"] != "integer" || limitProp["nullable"] != true {
+		t.Errorf("expected limit type integer and nullable true, got: %+v", limitProp)
+	}
+
+	// 2. Anthropic Tool Schema Normalization
+	anthropicReq := &proxy.AnthropicMessagesRequest{
+		Model: "gemini-3.8-flash",
+		Messages: []proxy.AnthropicMessage{
+			{Role: "user", Content: "Hello"},
+		},
+		Tools: []proxy.AnthropicTool{
+			{
+				Name:        "get_data",
+				Description: "Get data",
+				InputSchema: map[string]interface{}{
+					"title":                "Input",
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"key": map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	geminiAnthropic := proxy.MapAnthropicToGemini(anthropicReq, "proj-2")
+	if len(geminiAnthropic.Request.Tools) == 0 || len(geminiAnthropic.Request.Tools[0].FunctionDeclarations) == 0 {
+		t.Fatalf("expected function declaration in Anthropic mapped request")
+	}
+	antDecl := geminiAnthropic.Request.Tools[0].FunctionDeclarations[0]
+	if _, ok := antDecl.Parameters["title"]; ok {
+		t.Errorf("expected title to be removed from parameters")
+	}
+	if _, ok := antDecl.Parameters["additionalProperties"]; ok {
+		t.Errorf("expected additionalProperties to be removed from parameters")
+	}
+}
+
+func TestMapper_AntigravityEnvelopeAndThinkingSuppression(t *testing.T) {
+	// 1. OpenAI request without explicit thinking
+	openAIReq := &proxy.OpenAIChatRequest{
+		Model: "gemini-3.8-flash",
+		Messages: []proxy.OpenAIMessage{
+			{Role: "user", Content: "Hello world prompt"},
+		},
+	}
+	geminiOpenAI := proxy.MapOpenAIToGemini(openAIReq, "proj-test")
+
+	// Verify RequestID, SessionID, and Labels
+	if !strings.HasPrefix(geminiOpenAI.RequestID, "agent/") {
+		t.Errorf("expected RequestID to start with 'agent/', got %q", geminiOpenAI.RequestID)
+	}
+	if !strings.HasPrefix(geminiOpenAI.Request.SessionID, "-") {
+		t.Errorf("expected SessionID to start with '-', got %q", geminiOpenAI.Request.SessionID)
+	}
+	if geminiOpenAI.Request.Labels == nil || geminiOpenAI.Request.Labels["trajectory_id"] == "" {
+		t.Errorf("expected trajectory_id in Labels, got %+v", geminiOpenAI.Request.Labels)
+	}
+	if geminiOpenAI.Request.Labels["used_claude"] != "false" {
+		t.Errorf("expected used_claude false for gemini-3.8-flash, got %q", geminiOpenAI.Request.Labels["used_claude"])
+	}
+
+	// Verify Thinking Suppression
+	tc := geminiOpenAI.Request.GenerationConfig.ThinkingConfig
+	if tc == nil {
+		t.Fatalf("expected ThinkingConfig to be set for default gemini request to suppress silent thinking")
+	}
+	if tc.IncludeThoughts == nil || *tc.IncludeThoughts != false {
+		t.Errorf("expected IncludeThoughts false, got %v", tc.IncludeThoughts)
+	}
+	if tc.ThinkingLevel != "LOW" {
+		t.Errorf("expected ThinkingLevel LOW, got %q", tc.ThinkingLevel)
+	}
+
+	// 2. Anthropic request without explicit thinking
+	anthropicReq := &proxy.AnthropicMessagesRequest{
+		Model: "claude-3-7-sonnet",
+		Messages: []proxy.AnthropicMessage{
+			{Role: "user", Content: "Hello claude prompt"},
+		},
+	}
+	geminiAnthropic := proxy.MapAnthropicToGemini(anthropicReq, "proj-test")
+
+	if !strings.HasPrefix(geminiAnthropic.RequestID, "agent/") {
+		t.Errorf("expected RequestID to start with 'agent/', got %q", geminiAnthropic.RequestID)
+	}
+	if !strings.HasPrefix(geminiAnthropic.Request.SessionID, "-") {
+		t.Errorf("expected SessionID to start with '-', got %q", geminiAnthropic.Request.SessionID)
+	}
+	if geminiAnthropic.Request.Labels == nil || geminiAnthropic.Request.Labels["used_claude"] != "true" {
+		t.Errorf("expected used_claude true for claude model, got %+v", geminiAnthropic.Request.Labels)
+	}
+}
+
+func TestAnthropic_ToolChoiceAndDirective(t *testing.T) {
+	tools := []proxy.AnthropicTool{
+		{Name: "get_weather", Description: "Get weather", InputSchema: map[string]interface{}{"type": "object"}},
+	}
+
+	// 1. auto -> VALIDATED
+	reqAuto := &proxy.AnthropicMessagesRequest{
+		Model:      "gemini-3-flash",
+		Messages:   []proxy.AnthropicMessage{{Role: "user", Content: "weather"}},
+		Tools:      tools,
+		ToolChoice: map[string]interface{}{"type": "auto"},
+	}
+	resAuto := proxy.MapAnthropicToGemini(reqAuto, "p")
+	if resAuto.Request.ToolConfig == nil || resAuto.Request.ToolConfig.FunctionCallingConfig.Mode != "VALIDATED" {
+		t.Fatalf("expected VALIDATED mode for auto tool choice, got %+v", resAuto.Request.ToolConfig)
+	}
+
+	// 2. any -> ANY on Gemini should inject ForcedToolDirective
+	reqAny := &proxy.AnthropicMessagesRequest{
+		Model:      "gemini-3-flash",
+		Messages:   []proxy.AnthropicMessage{{Role: "user", Content: "weather"}},
+		Tools:      tools,
+		ToolChoice: map[string]interface{}{"type": "any"},
+	}
+	resAny := proxy.MapAnthropicToGemini(reqAny, "p")
+	if resAny.Request.ToolConfig == nil || resAny.Request.ToolConfig.FunctionCallingConfig.Mode != "ANY" {
+		t.Fatalf("expected ANY mode for any tool choice")
+	}
+	lastContent := resAny.Request.Contents[len(resAny.Request.Contents)-1]
+	if lastContent.Role != "user" || len(lastContent.Parts) == 0 || lastContent.Parts[0].Text != proxy.ForcedToolDirective {
+		t.Fatalf("expected ForcedToolDirective on gemini route when mode is ANY, got %+v", lastContent)
+	}
+
+	// 3. Claude without tools still gets VALIDATED mode
+	reqClaudeNoTools := &proxy.AnthropicMessagesRequest{
+		Model:    "claude-3-7-sonnet",
+		Messages: []proxy.AnthropicMessage{{Role: "user", Content: "hello"}},
+	}
+	resClaude := proxy.MapAnthropicToGemini(reqClaudeNoTools, "p")
+	if resClaude.Request.ToolConfig == nil || resClaude.Request.ToolConfig.FunctionCallingConfig.Mode != "VALIDATED" {
+		t.Fatalf("expected VALIDATED toolConfig for Claude model even with no tools declared")
+	}
+}
+
+func TestAnthropic_UnsignedToolCallSentinel(t *testing.T) {
+	proxy.ClearThoughtSignatures()
+	// Turn with two parallel tool calls in assistant history; both unsigned
+	req := &proxy.AnthropicMessagesRequest{
+		Model: "gemini-3-flash",
+		Messages: []proxy.AnthropicMessage{
+			{Role: "user", Content: "Check 2 files"},
+			{
+				Role: "assistant",
+				Content: []proxy.AnthropicContentBlock{
+					{Type: "tool_use", ID: "call_1", Name: "read_file", Input: map[string]interface{}{"path": "a.txt"}},
+					{Type: "tool_use", ID: "call_2", Name: "read_file", Input: map[string]interface{}{"path": "b.txt"}},
+				},
+			},
+			{
+				Role: "user",
+				Content: []proxy.AnthropicContentBlock{
+					{Type: "tool_result", ToolUseID: "call_1", Content: "file a"},
+					{Type: "tool_result", ToolUseID: "call_2", Content: "file b"},
+				},
+			},
+		},
+	}
+
+	mapped := proxy.MapAnthropicToGemini(req, "p")
+	if len(mapped.Request.Contents) < 2 {
+		t.Fatalf("expected at least 2 content turns, got %d", len(mapped.Request.Contents))
+	}
+	modelTurn := mapped.Request.Contents[1]
+	if modelTurn.Role != "model" {
+		t.Fatalf("expected model turn at index 1, got %s", modelTurn.Role)
+	}
+	if len(modelTurn.Parts) != 2 {
+		t.Fatalf("expected 2 parts in model turn, got %d", len(modelTurn.Parts))
+	}
+	// First tool call must have sentinel
+	if modelTurn.Parts[0].ThoughtSignature != proxy.SkipThoughtSignatureValidator {
+		t.Errorf("expected sentinel on first tool call, got %q", modelTurn.Parts[0].ThoughtSignature)
+	}
+	// Second tool call must NOT have sentinel (should be empty string)
+	if modelTurn.Parts[1].ThoughtSignature != "" {
+		t.Errorf("expected empty signature on subsequent tool call, got %q", modelTurn.Parts[1].ThoughtSignature)
+	}
+}
+
+func TestCachedTokens_OpenAIAndAnthropic(t *testing.T) {
+	gemResp := &google.GeminiResponse{
+		Candidates: []google.Candidate{
+			{
+				Content: google.GeminiContent{
+					Parts: []google.GeminiPart{{Text: "Hello"}},
+				},
+				FinishReason: "STOP",
+			},
+		},
+		UsageMetadata: google.UsageMetadata{
+			PromptTokenCount:        1000,
+			CachedContentTokenCount: 800,
+			CandidatesTokenCount:    50,
+			TotalTokenCount:         1050,
+		},
+	}
+
+	// 1. OpenAI Response
+	oaResp := proxy.FormatOpenAIResponse("id1", "gpt-4o", gemResp)
+	if oaResp.Usage.PromptTokens != 200 {
+		t.Errorf("expected prompt tokens 200 (1000 - 800), got %d", oaResp.Usage.PromptTokens)
+	}
+	if oaResp.Usage.PromptTokensDetails == nil || oaResp.Usage.PromptTokensDetails.CachedTokens != 800 {
+		t.Errorf("expected cached tokens 800 in details, got %+v", oaResp.Usage.PromptTokensDetails)
+	}
+
+	// 2. Anthropic Response
+	anthResp := proxy.FormatAnthropicResponse("msg1", "claude-3-7-sonnet", gemResp)
+	if anthResp.Usage.InputTokens != 200 {
+		t.Errorf("expected input tokens 200 (1000 - 800), got %d", anthResp.Usage.InputTokens)
+	}
+	if anthResp.Usage.CacheReadInputTokens != 800 {
+		t.Errorf("expected cache_read_input_tokens 800, got %d", anthResp.Usage.CacheReadInputTokens)
+	}
+}
+
+
+
 
 
 
